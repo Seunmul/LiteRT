@@ -1424,6 +1424,9 @@ TfLiteStatus Subgraph::OpPrepare(const TfLiteRegistration& op_reg,
 // Invoke the operator represented by 'node'.
 TfLiteStatus Subgraph::OpInvoke(const TfLiteRegistration& op_reg,
                                 TfLiteNode* node) {
+    //!TODO: If the op is backed by an external delegate or stable custom op, 
+    //!TODO: call its opaque invoke; otherwise, call the original registration's invoke.
+
   // Delegates that use the stable delegate API to iterate over the nodes and
   // registrations are presented with ABI stable 'TfLiteOperator'
   // pointers, as opposed to ABI unstable 'TfLiteRegistration' pointers, even
@@ -1666,6 +1669,7 @@ TfLiteStatus Subgraph::InvokeImpl() {
     ReportError("Non-persistent memory is not available.");
     return kTfLiteError;
   }
+  //!TODO: ADD CUSTOM PROFILER
   TFLITE_SCOPED_TAGGED_DEFAULT_PROFILE(profiler_.get(), "Invoke");
 #ifdef TF_LITE_TENSORFLOW_PROFILER
   tensorflow::profiler::TraceMe* trace_subgraph =
@@ -1703,8 +1707,12 @@ TfLiteStatus Subgraph::InvokeImpl() {
     bool profile_op =
         !(node.delegate != nullptr &&
           (node.delegate->flags & kTfLiteDelegateFlagsPerOperatorProfiling));
+
+    //!TODO: 여기서 프로파일링 시작!(생성자 생성 시 이벤트 등록)   
     TFLITE_SCOPED_TAGGED_OPERATOR_PROFILE(
         profile_op ? profiler_.get() : nullptr, op_name, node_index);
+
+    //!TODO: Checks input tensors for optional/skipped entries, stale delegate data recovery, and valid memory allocation.
 
     for (int i = 0; i < node.inputs->size; ++i) {
       int tensor_index = node.inputs->data[i];
@@ -1754,8 +1762,13 @@ TfLiteStatus Subgraph::InvokeImpl() {
       return kTfLiteCancelled;
     }
 
+    //!TODO: Invoke operator, handle dynamic tensor resizing, and optionally release memory.
+    //!TODO: Perform op execution, update plan if dynamic tensors resized, and release memory if needed.
     EnsureTensorsVectorCapacity();
     tensor_resized_since_op_invoke_ = false;
+
+    
+    //!TODO: Real Invoke Call
     if (auto s = OpInvoke(registration, &node); s != kTfLiteOk) {
       auto err = ReportOpError(&context_, node, registration, node_index,
                                "failed to invoke");
