@@ -252,7 +252,7 @@ StatWithPercentiles<int64_t> BenchmarkModel::Run(int min_num_times,
       run_duration_us = static_cast<int64_t>(
           static_cast<double>(run_duration_us) / gpu_invoke_loop_times);
     }
-#endif
+#endif 
     run_stats.UpdateStat(run_duration_us);
     if (run_frequency > 0) {
       inter_run_sleep_time =

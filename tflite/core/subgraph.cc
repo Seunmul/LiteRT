@@ -30,6 +30,7 @@ limitations under the License.
 #include <unordered_set>
 #include <utility>
 #include <vector>
+#include <iostream>
 
 #include "tensorflow/compiler/mlir/lite/allocation.h"
 #include "tflite/array.h"
@@ -1436,27 +1437,41 @@ TfLiteStatus Subgraph::OpInvoke(const TfLiteRegistration& op_reg,
   // 2. Otherwise the 'TfLiteOperator' is either a stable custom OP,
   //    or a stable delegate kernel, and in both of those cases we need to use
   //    the callbacks stored within the 'TfLiteOperator' itself.
+
+  std::cout << "op_invoke" << std::endl;
+  // If the 'op_reg' is a stable delegate kernel, then we need to use
+    // the 'invoke' callback from the 'op_reg' itself.
+
   if (op_reg.registration_external) {
     if (op_reg.registration_external->node_index != -1) {
       TfLiteRegistration* referenced_registration =
           &nodes_and_registration_[op_reg.registration_external->node_index]
                .second;
       if (referenced_registration->invoke == nullptr) return kTfLiteError;
+      std::cout << "op_invoke: referenced_registration->invoke" << std::endl;
       return referenced_registration->invoke(&context_, node);
     }
     if (op_reg.registration_external->invoke_with_data) {
       void* user_data = op_reg.registration_external->user_data;
+      std::cout << "op_invoke: op_reg.registration_external->invoke_with_data"
+                << std::endl;
       return op_reg.registration_external->invoke_with_data(
           user_data, reinterpret_cast<TfLiteOpaqueContext*>(&context_),
           reinterpret_cast<TfLiteOpaqueNode*>(node));
     }
     if (op_reg.registration_external->invoke) {
+        std::cout << "op_invoke: op_reg.registration_external->invoke"
+                  << std::endl;
       return op_reg.registration_external->invoke(
           reinterpret_cast<TfLiteOpaqueContext*>(&context_),
           reinterpret_cast<TfLiteOpaqueNode*>(node));
     }
   }
+  else{
+    std::cout << "op_invoke: op_reg.invoke" << std::endl;
+  }
   if (op_reg.invoke == nullptr) return kTfLiteError;
+    
   return op_reg.invoke(&context_, node);
 }
 
@@ -1703,6 +1718,16 @@ TfLiteStatus Subgraph::InvokeImpl() {
     bool profile_op =
         !(node.delegate != nullptr &&
           (node.delegate->flags & kTfLiteDelegateFlagsPerOperatorProfiling));
+    //!TODO: 
+    profile_op = true; // For now, we always profile the operator.
+    std::cout << "OperatorProfiling Enabled: "
+                      << (profile_op ? "true" : "false")
+                      << ", Op: " << op_name
+                      << ", Node index: " << node_index << "\n";
+    std::cout <<"Value of kTfLiteDelegateFlagsPerOperatorProfiling: "
+                      << kTfLiteDelegateFlagsPerOperatorProfiling <<"\n";
+                    
+    // If the profiler is enabled, we will profile this operator.
     TFLITE_SCOPED_TAGGED_OPERATOR_PROFILE(
         profile_op ? profiler_.get() : nullptr, op_name, node_index);
 
