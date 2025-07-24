@@ -1064,9 +1064,14 @@ TfLiteStatus BenchmarkTfLiteModel::InitInterpreter() {
 }
 
 TfLiteStatus BenchmarkTfLiteModel::Init() {
+
+  //!TODO: 1. Load Model
   TF_LITE_ENSURE_STATUS(LoadModel());
+
+  //!TODO: 2. Init Interpreter
   TF_LITE_ENSURE_STATUS(InitInterpreter());
 
+  //!TODO: 3. -> list_signature 옵션이 켜져있을 때, 시그니처만 나열하고 벤치마크 실행 없이 종료
   if (params_.Get<bool>("list_signatures")) {
     const std::vector<const std::string*>& keys =
         interpreter_->signature_keys();
@@ -1081,6 +1086,8 @@ TfLiteStatus BenchmarkTfLiteModel::Init() {
     return kTfLiteError;
   }
 
+
+  //!TODO: 4. -> Profiling buffer 크기 자동 조정 : 서브그래프 노드 수를 기준으로
   // Install profilers if necessary right after interpreter is created so that
   // any memory allocations inside the TFLite runtime could be recorded if the
   // installed profiler profile memory usage information.
@@ -1097,6 +1104,10 @@ TfLiteStatus BenchmarkTfLiteModel::Init() {
                          total_nodes + kProfilingBufferHeadrooms);
   }
 
+  //!TODO: 5. -> 리스너 등록. 사실 이 부분이 제일 이해안감
+  //!TODO: 여러 리스너가 적용되면 어쨌든 BenchmarkModel의 클래스변수에 저장된 listeners_에 저장됨
+  //!TODO: 나중에 순회하면서 전부 결과를 출력함
+  //!TODO: 근데 일단 여기에 왜 이렇게 많은 리스너가 있는지 잘 모르겠음
   AddOwnedListener(MayCreateProfilingListener());
   AddOwnedListener(std::unique_ptr<BenchmarkListener>(
       new InterpreterStatePrinter(interpreter_.get())));
@@ -1108,21 +1119,28 @@ TfLiteStatus BenchmarkTfLiteModel::Init() {
 
   interpreter_->SetAllowFp16PrecisionForFp32(params_.Get<bool>("allow_fp16"));
 
+
+  //!TODO: 6. InterpreterRunner 생성: signature 기반 실행을 지원하는 실행기 생성
   std::pair<TfLiteStatus, std::unique_ptr<BenchmarkInterpreterRunner>>
       status_and_runner = BenchmarkInterpreterRunner::Create(
           interpreter_.get(), params_.Get<std::string>("signature_to_run_for"));
 
   TF_LITE_ENSURE_STATUS(status_and_runner.first);
+  //!TODO: Interpretur_runner의 객체 소유권을 가지고 오는데, status_and_runner.second인것으로 봐서
+  //!TODO: BenchmarkInterpreterRunner::Create()의 리턴값이 벡터고 두번째 인자가 객체인듯
   interpreter_runner_ = std::move(status_and_runner.second);
 
+  //!TODO: 7. 입력 텐서 세팅 
   const std::vector<int>& runner_inputs = interpreter_runner_->inputs();
 
+  
   if (!inputs_.empty()) {
     TFLITE_TOOLS_CHECK_EQ(inputs_.size(), runner_inputs.size())
         << "Inputs mismatch: Model inputs #:" << inputs_.size()
         << " expected: " << runner_inputs.size();
   }
 
+  //!TODO: 8. 입력 텐서 이름과 모양 확인
   // Check if the tensor names match, and log a warning if it doesn't.
   for (int j = 0; j < inputs_.size(); ++j) {
     const InputLayerInfo& input = inputs_[j];
@@ -1150,17 +1168,24 @@ TfLiteStatus BenchmarkTfLiteModel::Init() {
     }
   }
 
+  //!TODO: 9. Delgate 적용
+
+  //!TODO: 적용 전에 혹시 모르게 owned_delegates_에 남아있는 delegate가 있다면 초기화
   owned_delegates_.clear();
 
   // Contains all ids of TfLiteNodes that have been checked to see whether
   // it's delegated or not.
   std::unordered_set<int> checked_node_ids;
+
+  //!TODO: delegate_providers는 말 그대로 delegate를 제공하는 객체들,
+  //!TODO: 그러니까 operator를 각 hw 백엔드에 맞게 delegation 하는 객체를 만드는 거임  
   tools::ProvidedDelegateList delegate_providers(&params_);
   auto created_delegates = delegate_providers.CreateAllRankedDelegates();
   TFLITE_MAY_LOG(INFO, (created_delegates.size() >= 2))
       << "Going to apply " << created_delegates.size()
       << " delegates one after another.";
 
+  //!TODO: full delegation 옵션 처리 
   // If created_delegates is empty, 'require_full_delegation' flag will
   // not be checked, thus CPU fallback will happen. Adding check here to
   // avoid fallback in this situation.
@@ -1169,6 +1194,9 @@ TfLiteStatus BenchmarkTfLiteModel::Init() {
     TFLITE_LOG(ERROR) << "Disallowed CPU fallback detected.";
     return kTfLiteError;
   }
+
+  //!TODO: delegate_providers를 순회하면서 delegate 적용
+  //!TODO: 하나의 delegate가 전체 subgraph를 실행하는 경우, 부분적으로 하는경우, 그러지 못하는 경우에 따라서 로깅
   for (auto& created_delegate : created_delegates) {
     const auto* delegate_provider = created_delegate.provider;
     TfLiteDelegate* delegate = created_delegate.delegate.get();
@@ -1234,11 +1262,14 @@ TfLiteStatus BenchmarkTfLiteModel::Init() {
     }
   }
 
+  //!TODO: 10. 텐서 메모리 할당
   if (interpreter_runner_->AllocateTensors() != kTfLiteOk) {
     TFLITE_LOG(ERROR) << "Failed to allocate tensors!";
     return kTfLiteError;
   }
 
+
+  //!TODO: 11. 추가 리스너 등록
   AddOwnedListener(
       std::unique_ptr<BenchmarkListener>(new RuyProfileListener()));
 
