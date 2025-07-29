@@ -1440,8 +1440,6 @@ TfLiteStatus Subgraph::OpInvoke(const TfLiteRegistration& op_reg,
   // 2. Otherwise the 'TfLiteOperator' is either a stable custom OP,
   //    or a stable delegate kernel, and in both of those cases we need to use
   //    the callbacks stored within the 'TfLiteOperator' itself.
-
-  std::cout << "op_invoke" << std::endl;
   // If the 'op_reg' is a stable delegate kernel, then we need to use
     // the 'invoke' callback from the 'op_reg' itself.
 
@@ -1471,10 +1469,15 @@ TfLiteStatus Subgraph::OpInvoke(const TfLiteRegistration& op_reg,
     }
   }
   else{
-    std::cout << "op_invoke: op_reg.invoke" << std::endl;
+    // std::cout << "op_invoke: op_reg.invoke" << std::endl;
   }
   if (op_reg.invoke == nullptr) return kTfLiteError;
-    
+
+  if (&context_.profiler == nullptr) {
+    ReportError(
+        "Profiler is not initialized. Cannot profiler operator %s.",
+        op_reg.custom_name ? op_reg.custom_name : "UnknownOp");
+  }
   return op_reg.invoke(&context_, node);
 }
 
@@ -1723,13 +1726,13 @@ TfLiteStatus Subgraph::InvokeImpl() {
         !(node.delegate != nullptr &&
           (node.delegate->flags & kTfLiteDelegateFlagsPerOperatorProfiling));
     //!TODO: 
-    profile_op = true; // For now, we always profile the operator.
-    std::cout << "OperatorProfiling Enabled: "
-                      << (profile_op ? "true" : "false")
-                      << ", Op: " << op_name
-                      << ", Node index: " << node_index << "\n";
-    std::cout <<"Value of kTfLiteDelegateFlagsPerOperatorProfiling: "
-                      << kTfLiteDelegateFlagsPerOperatorProfiling <<"\n";
+    // profile_op = true; // For now, we always profile the operator.
+    // std::cout << "OperatorProfiling Enabled: "
+    //                   << (profile_op ? "true" : "false")
+    //                   << ", Op: " << op_name
+    //                   << ", Node index: " << node_index << "\n";
+    // std::cout <<"Value of kTfLiteDelegateFlagsPerOperatorProfiling: "
+    //                   << kTfLiteDelegateFlagsPerOperatorProfiling <<"\n";
                     
     // If the profiler is enabled, we will profile this operator.
 
@@ -1794,6 +1797,10 @@ TfLiteStatus Subgraph::InvokeImpl() {
 
     
     //!TODO: Real Invoke Call
+    std::cout << "[Subgraph index: " << subgraph_index_ << " (" << name_ << ")] "
+            << "Invoking operator: " << op_name
+            << ", Node index: " << node_index << std::endl;
+
     if (auto s = OpInvoke(registration, &node); s != kTfLiteOk) {
       auto err = ReportOpError(&context_, node, registration, node_index,
                                "failed to invoke");

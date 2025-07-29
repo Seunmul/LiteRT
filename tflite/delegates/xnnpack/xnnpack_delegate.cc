@@ -888,6 +888,16 @@ class Subgraph {
                           const TfLiteDelegateParams* params,
                           Delegate& delegate) {
     int subgraph_index = 0;
+
+    // TF_LITE_KERNEL_LOG(context, "Creating subgraph.");
+    // If the context is not provided, we are creating a subgraph for the
+    // TF_LITE_KERNEL_LOG(context, "Check Profiler is given.");
+    // if (context->profiler != nullptr) {
+    //   TF_LITE_KERNEL_LOG(context, "Profiler is given.");
+    // }
+    // else {
+    //   TF_LITE_KERNEL_LOG(context, "Profiler is not given.");
+    // }
     if (context) {
       tflite::Subgraph* this_subgraph =
           reinterpret_cast<tflite::Subgraph*>(context->impl_);
@@ -1177,6 +1187,8 @@ class Subgraph {
     }
     if (context->profiler) {
       flags |= XNN_FLAG_BASIC_PROFILING;
+    //   TF_LITE_KERNEL_LOG(
+    //       context, "XNNPack delegate profiling enabled for this subgraph.");
     }
     flags |= delegate.runtime_flags();
 
@@ -1293,6 +1305,12 @@ class Subgraph {
     tflite::Subgraph* this_subgraph =
         reinterpret_cast<tflite::Subgraph*>(context->impl_);
 
+    // // show this delegate info
+    // if (context->profiler) {
+    //   delegate->ShowDelegateInfo(
+    //       reinterpret_cast<Profiler*>(context->profiler), this_subgraph,
+    //       delegate->tflite_delegate(), context);
+    // }
     bool any_pointers_changed = false;
     for (std::pair<const int, void*>& io_info : externals_) {
       const auto& resource_it = resources_.find(io_info.first);
@@ -1403,7 +1421,7 @@ class Subgraph {
 
     if (context->profiler) {
       if (AddEventsToProfiler(reinterpret_cast<Profiler*>(context->profiler),
-                              runtime_.get()) != kTfLiteOk) {
+                              runtime_.get(),context) != kTfLiteOk) {
         TF_LITE_KERNEL_LOG(context,
                            "failed to get XNNPACK profile information.");
       }
@@ -1415,7 +1433,8 @@ class Subgraph {
   // Fetch the profile information from XNNPACK and add the events to TfLite's
   // profiler.
   static TfLiteStatus AddEventsToProfiler(Profiler* profiler,
-                                          const xnn_runtime_t runtime) {
+                                          const xnn_runtime_t runtime,
+                                          TfLiteContext* context) {
     size_t required_size = 0;
 
     // xnn_get_runtime_profiling_info is called twice. The first time it sets
@@ -1423,10 +1442,21 @@ class Subgraph {
     // and returns xnn_status_out_of_memory. The second time it writes the
     // result to the buffer provided that the buffer is large enough and
     // returns xnn_status_success.
+
+    // if(profiler != nullptr){
+    //     TF_LITE_KERNEL_LOG(
+    //         context, "profiler is given");
+    // }
     xnn_status status = xnn_get_runtime_profiling_info(
         runtime, xnn_profile_info_operator_name, /*param_value_size*/ 0,
         /*param_value*/ nullptr, &required_size);
+    if (status == xnn_status_invalid_state) {
+      // No profiling information available.
+      TF_LITE_KERNEL_LOG(
+          context, "Invalid state: XNNPACK profiling information not available.");
+    } 
     std::vector<char> operator_names;
+
     if (status == xnn_status_out_of_memory) {
       operator_names.resize(required_size);
       status = xnn_get_runtime_profiling_info(
@@ -1436,6 +1466,7 @@ class Subgraph {
     if (status != xnn_status_success) {
       return kTfLiteError;
     }
+
     size_t num_operators;
     status = xnn_get_runtime_profiling_info(
         runtime, xnn_profile_info_num_operators, sizeof(num_operators),
@@ -1443,6 +1474,7 @@ class Subgraph {
     if (status != xnn_status_success) {
       return kTfLiteError;
     }
+
     status = xnn_get_runtime_profiling_info(
         runtime, xnn_profile_info_operator_timing, /*param_value_size*/ 0,
         /*param_value*/ nullptr, &required_size);
@@ -1457,6 +1489,7 @@ class Subgraph {
     if (status != xnn_status_success) {
       return kTfLiteError;
     }
+
     const char* operator_name = nullptr;
     size_t name_len = 0;
     for (size_t node_index = 0; node_index < num_operators; ++node_index) {
@@ -1467,6 +1500,8 @@ class Subgraph {
           Profiler::EventType::DELEGATE_PROFILED_OPERATOR_INVOKE_EVENT,
           operator_timings[node_index], node_index);
     }
+
+
     return kTfLiteOk;
   }
 
