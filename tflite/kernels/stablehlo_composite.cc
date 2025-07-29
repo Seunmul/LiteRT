@@ -17,6 +17,7 @@ limitations under the License.
 #include <cstdint>
 #include <memory>
 #include <vector>
+#include <iostream>
 
 #include "tflite/c/common.h"
 #include "tflite/context_util.h"
@@ -41,6 +42,8 @@ void* Init(TfLiteContext* context, const char* options, size_t options_len) {
   const TfLiteStablehloCompositeParams* params =
       reinterpret_cast<const TfLiteStablehloCompositeParams*>(options);
   data->subgraph_index = params->subgraph_index;
+
+  
   return data.release();
 }
 
@@ -226,6 +229,12 @@ TfLiteStatus Eval(TfLiteContext* context, TfLiteNode* node) {
   auto* subgraphs = this_subgraph->GetSubgraphs();
   Subgraph* decomposition_subgraph =
       (*subgraphs)[op_state->subgraph_index].get();
+
+
+const char* subgraph_name = decomposition_subgraph->GetName().c_str();
+// std::cout << "  -> [STABLEHLO_COMPOSITE::Eval] "
+//           << "Calling subgraph index: " << op_state->subgraph_index
+//           << ", name: " << subgraph_name << std::endl;
 
   if (op_state->subgraph_has_dynamic_output_tensors) {
     TF_LITE_ENSURE_OK(context, Eval_dynamic(context, node, this_subgraph,
