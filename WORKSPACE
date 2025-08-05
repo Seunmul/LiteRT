@@ -15,16 +15,20 @@ http_archive(
 
 load("@rules_shell//shell:repositories.bzl", "rules_shell_dependencies", "rules_shell_toolchains")
 
+# Java rules
+http_archive(
+    name = "rules_java",
+    urls = [
+        "https://github.com/bazelbuild/rules_java/releases/download/8.14.0/rules_java-8.14.0.tar.gz",
+    ],
+    sha256 = "bbe7d94360cc9ed4607ec5fd94995fd1ec41e84257020b6f09e64055281ecb12",
+)
+
 rules_shell_dependencies()
 
 rules_shell_toolchains()
 
-# Java rules
-http_archive(
-    name = "rules_java",
-    sha256 = "c73336802d0b4882e40770666ad055212df4ea62cfa6edf9cb0f9d29828a0934",
-    url = "https://github.com/bazelbuild/rules_java/releases/download/5.3.5/rules_java-5.3.5.tar.gz",
-)
+
 
 # Load the custom repository rule to select either a local TensorFlow source or a remote http_archive.
 load("//litert:tensorflow_source_rules.bzl", "tensorflow_source_repo")
