@@ -889,15 +889,6 @@ class Subgraph {
                           Delegate& delegate) {
     int subgraph_index = 0;
 
-    // TF_LITE_KERNEL_LOG(context, "Creating subgraph.");
-    // If the context is not provided, we are creating a subgraph for the
-    // TF_LITE_KERNEL_LOG(context, "Check Profiler is given.");
-    // if (context->profiler != nullptr) {
-    //   TF_LITE_KERNEL_LOG(context, "Profiler is given.");
-    // }
-    // else {
-    //   TF_LITE_KERNEL_LOG(context, "Profiler is not given.");
-    // }
     if (context) {
       tflite::Subgraph* this_subgraph =
           reinterpret_cast<tflite::Subgraph*>(context->impl_);
@@ -1295,6 +1286,12 @@ class Subgraph {
       }
     }
 
+    
+    // printf("\n⚡ XNNPACK Runtime Created in Prepare:\n");
+    // Show the XNNPACK runtime information.
+    
+    
+    
     return kTfLiteOk;
   }
 
@@ -1429,6 +1426,72 @@ class Subgraph {
 
     return kTfLiteOk;
   }
+
+
+// TODO: delete raw printf and try to log with buffered-strings to prevent printf calls in the middle of the delegate execution.
+ void PrintOperators() const {
+    if (runtime_ == nullptr) {
+      printf("      -> XNNPACK Runtime not yet created.\n");
+      return;
+    }
+
+    // 1. Get the number of operators.
+    size_t num_operators = 0;
+    enum xnn_status status = xnn_get_runtime_profiling_info(
+        runtime_.get(), xnn_profile_info_num_operators, sizeof(size_t),
+        &num_operators, /*param_value_size_ret=*/nullptr);
+
+    if (status != xnn_status_success) {
+      // This can happen if profiling is disabled.
+      if (status == xnn_status_invalid_state) {
+          printf("      -> XNNPACK profiling is not enabled for this runtime.\n");
+      } else {
+          printf("      -> Failed to get XNNPACK operator count (status: %d).\n", status);
+      }
+      return;
+    }
+
+    if (num_operators == 0) {
+        printf("      -> XNNPACK Subgraph contains 0 operators.\n");
+        return;
+    }
+
+    printf("      -> XNNPACK Subgraph (%zu operators):\n", num_operators);
+
+    // 2. Get the required size for operator names.
+    size_t required_name_size = 0;
+    status = xnn_get_runtime_profiling_info(
+        runtime_.get(), xnn_profile_info_operator_name, 0,
+        /*param_value=*/nullptr, &required_name_size);
+
+    if (status != xnn_status_out_of_memory) {
+      printf("      -> Failed to query size for operator names (status: %d).\n", status);
+      return;
+    }
+
+    // 3. Allocate buffer and get the actual operator names.
+    std::vector<char> operator_names(required_name_size);
+    status = xnn_get_runtime_profiling_info(
+        runtime_.get(), xnn_profile_info_operator_name,
+        operator_names.size(), operator_names.data(), /*param_value_size_ret=*/nullptr);
+
+    if (status != xnn_status_success) {
+      printf("      -> Failed to get XNNPACK operator names (status: %d).\n", status);
+      return;
+    }
+
+
+    // 4. Print the names.
+    const char* name_ptr = operator_names.data();
+    for (size_t i = 0; i < num_operators; ++i) {
+      printf("    [%zu] %s\n", i, name_ptr);
+      // Move to the next null-terminated string.
+      name_ptr += strlen(name_ptr) + 1;
+    }
+  }
+
+     
+
 
   // Fetch the profile information from XNNPACK and add the events to TfLite's
   // profiler.
@@ -6707,6 +6770,18 @@ TfLiteIntArray* Delegate::PrepareOpsToDelegate(TfLiteContext* context) {
       continue;  // Soft error (skip this node).
     }
 
+
+     // 노드 정보 출력
+    // std::string op_name = tflite::EnumNameBuiltinOperator(static_cast<tflite::BuiltinOperator>(registration->builtin_code));
+    // if (op_name.empty()) {
+    //   op_name = "Unknown Operator";
+    // }
+    
+    // printf("Processing node %d, builtin_code: %d, custom_name: %s\n",
+    //        node_index, registration->builtin_code, op_name.c_str());
+
+    // Get the name of the builtin operator from builtin_code
+    
     // Prepare to unpack FP16/INT8 tensors.
     if (registration->builtin_code == kTfLiteBuiltinDequantize &&
         node->inputs->size == 1 && node->outputs->size == 1) {
@@ -6837,8 +6912,11 @@ TfLiteIntArray* Delegate::PrepareOpsToDelegate(TfLiteContext* context) {
     }
 
     nodes_to_delegate->data[nodes_to_delegate->size++] = node_index;
+    // printf("✓ Node %d delegated to XNNPACK\n", node_index);
+
   }
 
+  
   // Record which resource variables can be delegated.
   for (const auto& i : local_id_to_resources_) {
     if (i.second.GetProxyValue() >= 0) {
@@ -7118,6 +7196,12 @@ void* SubgraphInit(TfLiteContext* context, const char* buffer, size_t length) {
   const TfLiteDelegateParams* params =
       reinterpret_cast<const TfLiteDelegateParams*>(buffer);
 
+    //   printf("\nfunc SubGraphInit: SubgraphInit called with params: %p, length: %zu\n",
+    //          params, length);
+    //             printf("\n🏗️  SubgraphInit: Creating XNNPACK subgraph\n");
+    //             printf("   📋 Delegated nodes count: %d\n", params->nodes_to_replace->size);
+    //             printf("   📥 Input tensors count: %d\n", params->input_tensors->size);
+    //             printf("   📤 Output tensors count: %d\n", params->output_tensors->size);
   return static_cast<void*>(Subgraph::Create(
       context, params,
       *static_cast<::tflite::xnnpack::Delegate*>(params->delegate->data_)));
@@ -7162,13 +7246,37 @@ const TfLiteRegistration kSubgraphRegistration = {
     /*.version=*/2,
 };
 
+// #include <cstdio>
 TfLiteStatus DelegatePrepare(TfLiteContext* context, TfLiteDelegate* delegate) {
+//   printf("Preparing XNNPACK delegate with x nodes to delegate.\n");
   TfLiteIntArray* ops_to_replace =
       static_cast<::tflite::xnnpack::Delegate*>(delegate->data_)
           ->PrepareOpsToDelegate(context);
   if (ops_to_replace == nullptr) {
     return kTfLiteError;
   }
+
+//   printf("XNNPACK delegate prepared with %d nodes to delegate.\n",
+//          ops_to_replace->size);
+//   print detailed information about the nodes to delegate
+//   printf("Nodes to delegate in XNNPACK delegate:\n");
+//     for (int i = 0; i < ops_to_replace->size; ++i
+//     ) {
+//             int node_index = ops_to_replace->data[i];
+//             TfLiteNode* node = nullptr;
+//             TfLiteRegistration* registration = nullptr;
+//             if (context->GetNodeAndRegistration(context, node_index, &node,
+//                                                 &registration) != kTfLiteOk) {
+//             continue;  // Soft error (skip this node).
+//             }
+//             std::string op_name =
+//                 tflite::EnumNameBuiltinOperator(static_cast<tflite::BuiltinOperator>(
+//                     registration->builtin_code));
+//             if (op_name.empty()) {
+//             op_name = "Unknown Operator";
+//             }
+//             printf("    Node %d: %s\n", node_index, op_name.c_str());
+//         }
 
   const TfLiteStatus status = context->ReplaceNodeSubsetsWithDelegateKernels(
       context, kSubgraphRegistration, ops_to_replace, delegate);
@@ -7177,8 +7285,24 @@ TfLiteStatus DelegatePrepare(TfLiteContext* context, TfLiteDelegate* delegate) {
 }
 
 }  // namespace
+
+ void TfLiteXNNPackDelegateInspectImpl(void* delegate_data) {
+        if (delegate_data == nullptr) {
+            return;
+        }
+        const auto* subgraph =
+            static_cast<const tflite::xnnpack::Subgraph*>(delegate_data);
+        subgraph->PrintOperators();
+    }
 }  // namespace xnnpack
 }  // namespace tflite
+
+void TfLiteXNNPackDelegateInspect(void* delegate) {
+  if (delegate == nullptr ) {
+    return;
+  }
+  tflite::xnnpack::TfLiteXNNPackDelegateInspectImpl(delegate);
+}
 
 TfLiteXNNPackDelegateWeightsCache* TfLiteXNNPackDelegateWeightsCacheCreate() {
   xnn_status status = xnn_initialize(/*allocator=*/nullptr);
@@ -7328,5 +7452,8 @@ void TfLiteXNNPackDelegateDelete(TfLiteDelegate* delegate) {
     delete data;
   }
 }
+
+
+
 
 // NOLINTEND(*-runtime-unneeded-pointer-stability-check)

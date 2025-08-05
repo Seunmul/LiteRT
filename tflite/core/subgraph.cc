@@ -566,10 +566,17 @@ namespace tflite
             disable_node_fusion);
     }
 
+    // #include<cstdio>
     TfLiteStatus Subgraph::ReplaceNodeSubsetsWithDelegateKernels(
         TfLiteRegistration registration, const TfLiteIntArray *nodes_to_replace,
         TfLiteDelegate *delegate)
     {
+
+        
+        // printf("Subgraph::ReplaceNodeSubsetsWithDelegateKernels\n");
+        // printf("Replacing %d out of %d node(s) with delegate (%s) node,.\n",
+        //                 nodes_to_replace->size, execution_plan_.size(),
+        //                 GetDelegateKernalName(registration));
         // Annotate the registration as DELEGATE op.
         registration.builtin_code = BuiltinOperator_DELEGATE;
         if (registration.registration_external)
@@ -626,8 +633,8 @@ namespace tflite
         {
             return kTfLiteError;
         }
-
-        // On Android the log message below is used for diagnosing delegation success
+   
+            // On Android the log message below is used for diagnosing delegation success
         // also in production builds. Use VERBOSE here so that the logging is turned
         // off in production builds on other platforms.
         TFLITE_LOG_PROD(tflite::TFLITE_LOG_VERBOSE,
@@ -637,7 +644,11 @@ namespace tflite
                         nodes_to_replace->size, execution_plan_.size(),
                         GetDelegateKernalName(registration), node_subsets.size(),
                         subgraph_index_);
-
+        // printf("func ReplaceNodeWithDelegateKernels\n: Replacing %d out of %d node(s) with delegate (%s) node, yielding %zu partitions for subgraph %d.",
+        //                 nodes_to_replace->size, execution_plan_.size(),
+        //                 GetDelegateKernalName(registration), node_subsets.size(),
+        //                 subgraph_index_);
+        // Clear the execution plan, so that we can rebuild it with the new nodes.
         execution_plan_.clear();
 
         for (auto &node_subset : node_subsets)
@@ -694,6 +705,10 @@ namespace tflite
                 break;
             }
         }
+        // printf("\n");
+        // printf("func ReplaceNodeWithDelegateKernels\n: "
+        //                 "Successfully replaced %zu nodes with delegate kernels.\n",
+        //                 node_subsets.size());
         return kTfLiteOk;
     }
 

@@ -19,6 +19,8 @@ limitations under the License.
 
 #include "tflite/core/c/c_api_types.h"
 #include "tflite/core/c/common.h"
+// #include <cstdio>
+
 
 TfLiteStatus TfLiteDelegatePrepareInternal(TfLiteContext* context,
                                            TfLiteDelegate* delegate) {
@@ -33,7 +35,9 @@ TfLiteStatus TfLiteDelegatePrepareInternal(TfLiteContext* context,
         reinterpret_cast<TfLiteOpaqueContext*>(context),
         reinterpret_cast<TfLiteOpaqueDelegate*>(delegate),
         delegate->opaque_delegate_builder->data);
+        // printf("Using opaque delegate builder for Prepare.\n");
   } else {
+    // printf("Using delegate's Prepare function.\n");
     status = delegate->Prepare(context, delegate);
   }
   return status;
