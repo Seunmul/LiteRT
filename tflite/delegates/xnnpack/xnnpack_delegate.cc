@@ -34,6 +34,8 @@ limitations under the License.
 #include <unordered_set>
 #include <utility>
 #include <vector>
+#include <iostream>
+#include <fstream>
 
 #include "xnnpack.h"  // from @XNNPACK
 #include "Eigen/Core"  // from @eigen_archive
@@ -887,6 +889,9 @@ class Subgraph {
   static Subgraph* Create(TfLiteContext* context,
                           const TfLiteDelegateParams* params,
                           Delegate& delegate) {
+
+    TFLITE_LOG_PROD(tflite::TFLITE_LOG_VERBOSE,
+                    "SubgraphCreate: called");
     int subgraph_index = 0;
 
     if (context) {
@@ -1042,6 +1047,10 @@ class Subgraph {
       TF_LITE_KERNEL_LOG(context, "failed to create XNNPACK subgraph");
       return nullptr;
     }
+    
+    TFLITE_LOG_PROD(tflite::TFLITE_LOG_VERBOSE,
+                "SubgraphCreate: created XNNPACK subgraph with %zu external "
+                "values", tensors.size());
 
     // Smart pointer to automatically release subgraph on exit.
     std::unique_ptr<xnn_subgraph, decltype(&xnn_delete_subgraph)> subgraph(
@@ -1123,6 +1132,9 @@ class Subgraph {
 
     // Create XNNPACK nodes for TFLite delegate nodes
     for (int i = 0; i < params->nodes_to_replace->size; i++) {
+        // TFLITE_LOG_PROD(tflite::TFLITE_LOG_VERBOSE,
+        //                 "SubgraphCreate: creating XNNPACK node for TFLite node %d",
+        //                 params->nodes_to_replace->data[i]);
       const int node_index = params->nodes_to_replace->data[i];
       if (delegate.static_unpack_nodes_.count(node_index) != 0) {
         // The node unpacks static input and can be skipped because its input
@@ -1142,6 +1154,9 @@ class Subgraph {
                     tflite_tensor_to_xnnpack) != kTfLiteOk) {
         return nullptr;
       }
+    //   TFLITE_LOG_PROD(tflite::TFLITE_LOG_VERBOSE,
+    //                   "SubgraphCreate: created XNNPACK node for TFLite node %d",
+    //                   node_index);
     }
 
     xnn_runtime_t runtime_ptr = nullptr;
@@ -1178,8 +1193,6 @@ class Subgraph {
     }
     if (context->profiler) {
       flags |= XNN_FLAG_BASIC_PROFILING;
-    //   TF_LITE_KERNEL_LOG(
-    //       context, "XNNPack delegate profiling enabled for this subgraph.");
     }
     flags |= delegate.runtime_flags();
 
@@ -1191,9 +1204,16 @@ class Subgraph {
         return nullptr;
       }
     }
+    TFLITE_LOG_PROD(tflite::TFLITE_LOG_VERBOSE,
+                    "SubgraphCreate: creating XNNPACK runtime with flags: %u",
+                    flags);
     status = xnn_create_runtime_v4(subgraph.get(), delegate.weights_cache(),
                                    delegate.workspace(), delegate.threadpool(),
                                    flags, &runtime_ptr);
+
+     TFLITE_LOG_PROD(tflite::TFLITE_LOG_VERBOSE,
+                    "SubgraphCreate: created XNNPACK runtime ");
+
     if (delegate.weight_cache_provider_->IsActive() &&
         delegate.weight_cache_provider_->CanStartBuildStep()) {
       if (!delegate.weight_cache_provider_->StopBuildStep()) {
@@ -1429,11 +1449,14 @@ class Subgraph {
 
 
 // TODO: delete raw printf and try to log with buffered-strings to prevent printf calls in the middle of the delegate execution.
- void PrintOperators() const {
+ void PrintOperators(std::ostream *output = nullptr) const {
+    std::ostream &out = (output != nullptr) ? *output : std::cout;
+
     if (runtime_ == nullptr) {
-      printf("      -> XNNPACK Runtime not yet created.\n");
+      out << "      -> XNNPACK Runtime not yet created.\n";
       return;
     }
+
 
     // 1. Get the number of operators.
     size_t num_operators = 0;
@@ -1444,19 +1467,19 @@ class Subgraph {
     if (status != xnn_status_success) {
       // This can happen if profiling is disabled.
       if (status == xnn_status_invalid_state) {
-          printf("      -> XNNPACK profiling is not enabled for this runtime.\n");
+          out << "      -> XNNPACK profiling is not enabled for this runtime.\n";
       } else {
-          printf("      -> Failed to get XNNPACK operator count (status: %d).\n", status);
+          out << "      -> Failed to get XNNPACK operator count (status: " << status << ").\n";
       }
       return;
     }
 
     if (num_operators == 0) {
-        printf("      -> XNNPACK Subgraph contains 0 operators.\n");
+        out << "      -> XNNPACK Subgraph contains 0 operators.\n";
         return;
     }
 
-    printf("      -> XNNPACK Subgraph (%zu operators):\n", num_operators);
+    out << "      -> XNNPACK Subgraph (" << num_operators << " operators):\n";
 
     // 2. Get the required size for operator names.
     size_t required_name_size = 0;
@@ -1465,7 +1488,7 @@ class Subgraph {
         /*param_value=*/nullptr, &required_name_size);
 
     if (status != xnn_status_out_of_memory) {
-      printf("      -> Failed to query size for operator names (status: %d).\n", status);
+      out << "      -> Failed to query size for operator names (status: " << status << ").\n";
       return;
     }
 
@@ -1476,7 +1499,7 @@ class Subgraph {
         operator_names.size(), operator_names.data(), /*param_value_size_ret=*/nullptr);
 
     if (status != xnn_status_success) {
-      printf("      -> Failed to get XNNPACK operator names (status: %d).\n", status);
+      out << "      -> Failed to get XNNPACK operator names (status: " << status << ").\n";
       return;
     }
 
@@ -1484,9 +1507,8 @@ class Subgraph {
     // 4. Print the names.
     const char* name_ptr = operator_names.data();
     for (size_t i = 0; i < num_operators; ++i) {
-      printf("    [%zu] %s\n", i, name_ptr);
-      // Move to the next null-terminated string.
-      name_ptr += strlen(name_ptr) + 1;
+        out << "        [" << std::setw(4) << std::setfill('0') << i << "] " << name_ptr << "\n";
+        name_ptr += strlen(name_ptr) + 1; // Move to the next null-terminated string.
     }
   }
 
@@ -7023,9 +7045,9 @@ TfLiteIntArray* Delegate::PrepareOpsToDelegate(TfLiteContext* context) {
     char* unpacked_data = unpacked_data_buffer.data();
     static_unpacked_data[t] = std::move(unpacked_data_buffer);
 
-    // TFLITE_LOG(tflite::TFLITE_LOG_VERBOSE,
-    //            "Allocating %zu bytes for static tensor %i.",
-    //            context->tensors[t].bytes, t);
+    TFLITE_LOG(tflite::TFLITE_LOG_VERBOSE,
+               "Allocating %zu bytes for static tensor %i.",
+               context->tensors[t].bytes, t);
     switch (registration->builtin_code) {
       case kTfLiteBuiltinDequantize: {
         // Such a condition has been checked when preparing to unpack
@@ -7196,6 +7218,9 @@ void* SubgraphInit(TfLiteContext* context, const char* buffer, size_t length) {
   const TfLiteDelegateParams* params =
       reinterpret_cast<const TfLiteDelegateParams*>(buffer);
 
+    TFLITE_LOG_PROD(tflite::TFLITE_LOG_VERBOSE,
+                       "SubgraphInit called with params: %p, length: %zu",
+                       params, length);
     //   printf("\nfunc SubGraphInit: SubgraphInit called with params: %p, length: %zu\n",
     //          params, length);
     //             printf("\n🏗️  SubgraphInit: Creating XNNPACK subgraph\n");
@@ -7286,22 +7311,28 @@ TfLiteStatus DelegatePrepare(TfLiteContext* context, TfLiteDelegate* delegate) {
 
 }  // namespace
 
- void TfLiteXNNPackDelegateInspectImpl(void* delegate_data) {
-        if (delegate_data == nullptr) {
-            return;
-        }
-        const auto* subgraph =
-            static_cast<const tflite::xnnpack::Subgraph*>(delegate_data);
-        subgraph->PrintOperators();
+void TfLiteXNNPackDelegateInspectImpl(void* delegate_data, std::ostream *output = nullptr) {
+    if (delegate_data == nullptr) {
+        return;
+    }
+    std::ostream &out = (output != nullptr) ? *output : std::cout;
+    const auto* subgraph = static_cast<const tflite::xnnpack::Subgraph*>(delegate_data);
+        subgraph->PrintOperators(output);
     }
 }  // namespace xnnpack
 }  // namespace tflite
 
-void TfLiteXNNPackDelegateInspect(void* delegate) {
-  if (delegate == nullptr ) {
+void TfLiteXNNPackDelegateInspect(void* delegate, void* out_ostream) {
+  if (delegate == nullptr) {
     return;
   }
-  tflite::xnnpack::TfLiteXNNPackDelegateInspectImpl(delegate);
+
+  std::ostream* output_stream = static_cast<std::ostream*>(out_ostream);
+  if (output_stream == nullptr) {
+    output_stream = &std::cout;
+  }
+
+  tflite::xnnpack::TfLiteXNNPackDelegateInspectImpl(delegate, output_stream);
 }
 
 TfLiteXNNPackDelegateWeightsCache* TfLiteXNNPackDelegateWeightsCacheCreate() {
