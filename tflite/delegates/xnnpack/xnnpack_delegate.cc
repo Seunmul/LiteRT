@@ -1449,11 +1449,11 @@ class Subgraph {
 
 
 // TODO: delete raw printf and try to log with buffered-strings to prevent printf calls in the middle of the delegate execution.
- void PrintOperators(std::ostream *output = nullptr) const {
+ void PrintOperators(std::ostream *output = nullptr, const char* indent_str = "") const {
     std::ostream &out = (output != nullptr) ? *output : std::cout;
 
     if (runtime_ == nullptr) {
-      out << "      -> XNNPACK Runtime not yet created.\n";
+      out << indent_str <<"-> XNNPACK Runtime not yet created.\n";
       return;
     }
 
@@ -1467,19 +1467,19 @@ class Subgraph {
     if (status != xnn_status_success) {
       // This can happen if profiling is disabled.
       if (status == xnn_status_invalid_state) {
-          out << "      -> XNNPACK profiling is not enabled for this runtime.\n";
+          out << indent_str <<"-> XNNPACK profiling is not enabled for this runtime.\n";
       } else {
-          out << "      -> Failed to get XNNPACK operator count (status: " << status << ").\n";
+          out << indent_str <<"-> Failed to get XNNPACK operator count (status: " << status << ").\n";
       }
       return;
     }
 
     if (num_operators == 0) {
-        out << "      -> XNNPACK Subgraph contains 0 operators.\n";
+        out << indent_str <<"-> XNNPACK Subgraph contains 0 operators.\n";
         return;
     }
 
-    out << "      -> XNNPACK Subgraph (" << num_operators << " operators):\n";
+    out << indent_str <<"-> XNNPACK Subgraph (" << num_operators << " operators):\n";
 
     // 2. Get the required size for operator names.
     size_t required_name_size = 0;
@@ -1488,7 +1488,7 @@ class Subgraph {
         /*param_value=*/nullptr, &required_name_size);
 
     if (status != xnn_status_out_of_memory) {
-      out << "      -> Failed to query size for operator names (status: " << status << ").\n";
+      out << indent_str <<"-> Failed to query size for operator names (status: " << status << ").\n";
       return;
     }
 
@@ -1499,7 +1499,7 @@ class Subgraph {
         operator_names.size(), operator_names.data(), /*param_value_size_ret=*/nullptr);
 
     if (status != xnn_status_success) {
-      out << "      -> Failed to get XNNPACK operator names (status: " << status << ").\n";
+      out << indent_str <<"-> Failed to get XNNPACK operator names (status: " << status << ").\n";
       return;
     }
 
@@ -1507,7 +1507,7 @@ class Subgraph {
     // 4. Print the names.
     const char* name_ptr = operator_names.data();
     for (size_t i = 0; i < num_operators; ++i) {
-        out << "        [" << std::setw(4) << std::setfill('0') << i << "] " << name_ptr << "\n";
+        out << indent_str <<"  [" << std::setw(4) << std::setfill('0') << i << "] " << name_ptr << "\n";
         name_ptr += strlen(name_ptr) + 1; // Move to the next null-terminated string.
     }
   }
@@ -7311,18 +7311,18 @@ TfLiteStatus DelegatePrepare(TfLiteContext* context, TfLiteDelegate* delegate) {
 
 }  // namespace
 
-void TfLiteXNNPackDelegateInspectImpl(void* delegate_data, std::ostream *output = nullptr) {
+void TfLiteXNNPackDelegateInspectImpl(void* delegate_data, std::ostream *output = nullptr, const char* indent_str="") {
     if (delegate_data == nullptr) {
         return;
     }
     std::ostream &out = (output != nullptr) ? *output : std::cout;
     const auto* subgraph = static_cast<const tflite::xnnpack::Subgraph*>(delegate_data);
-        subgraph->PrintOperators(output);
+        subgraph->PrintOperators(output,indent_str);
     }
 }  // namespace xnnpack
 }  // namespace tflite
 
-void TfLiteXNNPackDelegateInspect(void* delegate, void* out_ostream) {
+void TfLiteXNNPackDelegateInspect(void* delegate, void* out_ostream, const char* indent_str) {
   if (delegate == nullptr) {
     return;
   }
@@ -7332,7 +7332,7 @@ void TfLiteXNNPackDelegateInspect(void* delegate, void* out_ostream) {
     output_stream = &std::cout;
   }
 
-  tflite::xnnpack::TfLiteXNNPackDelegateInspectImpl(delegate, output_stream);
+  tflite::xnnpack::TfLiteXNNPackDelegateInspectImpl(delegate, output_stream, indent_str);
 }
 
 TfLiteXNNPackDelegateWeightsCache* TfLiteXNNPackDelegateWeightsCacheCreate() {

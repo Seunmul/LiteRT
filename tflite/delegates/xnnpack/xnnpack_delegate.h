@@ -203,7 +203,7 @@ TFL_CAPI_EXPORT bool TfLiteXNNPackDelegateWeightsCacheFinalizeHard(
 TFL_CAPI_EXPORT void TfLiteXNNPackDelegateWeightsCacheDelete(
     struct TfLiteXNNPackDelegateWeightsCache* cache);
 
-TFL_CAPI_EXPORT void TfLiteXNNPackDelegateInspect(void* delegate, void* out_ostream);
+TFL_CAPI_EXPORT void TfLiteXNNPackDelegateInspect(void* delegate, void* out_ostream, const char* indent_str);
 
 #ifdef __cplusplus
 }
