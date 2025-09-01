@@ -20,23 +20,24 @@ rules_shell_dependencies()
 rules_shell_toolchains()
 
 # Java rules
-http_archive(
-    name = "rules_java",
-    urls = [
-        "https://github.com/bazelbuild/rules_java/releases/download/8.14.0/rules_java-8.14.0.tar.gz",
-    ],
-    sha256 = "bbe7d94360cc9ed4607ec5fd94995fd1ec41e84257020b6f09e64055281ecb12",
-)
+# http_archive(
+#     name = "rules_java",
+#     urls = [
+#         "https://github.com/bazelbuild/rules_java/releases/download/8.14.0/rules_java-8.14.0.tar.gz",
+#     ],
+#     sha256 = "bbe7d94360cc9ed4607ec5fd94995fd1ec41e84257020b6f09e64055281ecb12",
+# )
 
 # Load the custom repository rule to select either a local TensorFlow source or a remote http_archive.
 load("//litert:tensorflow_source_rules.bzl", "tensorflow_source_repo")
 
+# 25.08.26: fix tensorflow version to 2.20
 tensorflow_source_repo(
     name = "org_tensorflow",
     sha256 = "",
-    strip_prefix = "tensorflow-master",
+    strip_prefix = "tensorflow-2.20.0",
     urls = [
-        "https://github.com/tensorflow/tensorflow/archive/master.tar.gz",
+        "https://github.com/tensorflow/tensorflow/archive/refs/tags/v2.20.0.tar.gz",
     ],
 )
 
