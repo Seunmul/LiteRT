@@ -33,12 +33,13 @@ rules_shell_toolchains()
 # Load the custom repository rule to select either a local TensorFlow source or a remote http_archive.
 load("//litert:tensorflow_source_rules.bzl", "tensorflow_source_repo")
 
+# 25.08.26: fix tensorflow version to 2.20
 tensorflow_source_repo(
     name = "org_tensorflow",
     sha256 = "",
-    strip_prefix = "tensorflow-master",
+    strip_prefix = "tensorflow-2.20.0",
     urls = [
-        "https://github.com/tensorflow/tensorflow/archive/master.tar.gz",
+        "https://github.com/tensorflow/tensorflow/archive/refs/tags/v2.20.0.tar.gz",
     ],
 )
 
