@@ -29,7 +29,6 @@ rules_shell_dependencies()
 rules_shell_toolchains()
 
 
-
 # Load the custom repository rule to select either a local TensorFlow source or a remote http_archive.
 load("//litert:tensorflow_source_rules.bzl", "tensorflow_source_repo")
 
