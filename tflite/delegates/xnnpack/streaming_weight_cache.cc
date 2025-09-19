@@ -1,17 +1,3 @@
-/* Copyright 2024 The TensorFlow Authors. All Rights Reserved.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-==============================================================================*/
 #include "tflite/delegates/xnnpack/weight_cache.h"
 
 #include <fcntl.h>
@@ -28,7 +14,10 @@ limitations under the License.
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <fstream>
+#include <iomanip>
 #include <memory>
+#include <sstream>
 #include <string>
 #include <unordered_map>
 #include <utility>
@@ -426,6 +415,46 @@ size_t StreamingWeightCacheProvider::LookUpOrInsert(
   return location.offset;
 }
 
+//! READY FOR IMPLEMENT DOUBLE BUFFERING
+struct DoubleBufferResolver {
+  size_t logical_offset;         // 오퍼레이터에서 보는 논리 offset
+  size_t buffer_offset[2];       // 실제 mmap된 두 개의 버퍼 offset
+  int active;                    // 현재 실행 중인 버퍼 인덱스 (0 or 1)
+  int prefetch;                  // 백그라운드에서 채우는 버퍼 인덱스
+  std::string debug_tag;         // FC, CONV 등 디버그용 태그
+};
+
+std::unordered_map<size_t, DoubleBufferResolver> double_buffer_resolvers_;
+
+
+// void StreamingWeightCacheProvider::FlipBuffer(size_t logical_offset) {
+//   auto& resolver = double_buffer_resolvers_.at(logical_offset);
+//   resolver.active ^= 1;
+// }
+
+//! READY FOR IMPLEMENT DOUBLE BUFFERING -> We need to modify this function to return the address from the active buffer
+
+// void* StreamingWeightCacheProvider::OffsetToAddr(const size_t offset) {
+//   // double buffer resolver가 있으면 active buffer 선택
+//   auto it = double_buffer_resolvers_.find(offset);
+//   if (it != double_buffer_resolvers_.end()) {
+//     const DoubleBufferResolver& resolver = it->second;
+//     size_t real_offset = resolver.buffer_offset[resolver.active];
+//     return offset_to_addr_.at(real_offset);
+//   }
+
+//   // 기본 경로
+//   return offset_to_addr_.at(offset);
+// }
+
+// // prefetch thread
+// void Prefetch(DoubleBufferResolver& resolver, const void* data, size_t size) {
+//   size_t prefetch_offset = resolver.buffer_offset[resolver.prefetch];
+//   void* dst = offset_to_addr_.at(prefetch_offset);
+//   memcpy(dst, data, size);
+// }
+
+
 void* StreamingWeightCacheProvider::OffsetToAddr(const size_t offset) {
   // While the cache is being built, the buffer could grow and need to be
   // reallocated so we cannot ensure pointer stability.
@@ -434,6 +463,7 @@ void* StreamingWeightCacheProvider::OffsetToAddr(const size_t offset) {
       "Cannot get the address of a buffer in a cache during a building step.");
   return offset_to_addr_[offset];
 }
+
 
 void StreamingWeightCacheProvider::Release() {
   buffer_address_to_identifier_.clear();
@@ -504,6 +534,217 @@ PackIdentifier StreamingWeightCacheProvider::BuildPackIdentifier(
                         /*bias_id=*/get_buffer_id(key.bias)};
 }
 
+std::string StreamingWeightCacheProvider::GetWeightCacheStats() const {
+  std::ostringstream oss;
+  
+  if (mmap_handles_.empty()) {
+    oss << "Cache not loaded.";
+    return oss.str();
+  }
+  
+  const MMapHandle& mmap_handle = mmap_handles_.front();
+  
+  oss << "Cache Stats: "
+      << "File size: " << mmap_handle.size() << " bytes, "
+      << "Cached buffers: " << cache_key_to_offset_.size() << ", "
+      << "Memory mappings: " << mmap_handles_.size();
+  
+  return oss.str();
+}
+
+bool StreamingWeightCacheProvider::DumpWeightCacheStructureToFile(const std::string& dump_file_path) const {
+  std::ofstream file(dump_file_path);
+  if (!file.is_open()) {
+    TFLITE_LOG_PROD(tflite::TFLITE_LOG_ERROR,
+                    "Failed to open dump file: %s", dump_file_path.c_str());
+    return false;
+  }
+  
+  file << DumpWeightCacheStructure();
+  file.close();
+  
+  TFLITE_LOG_PROD(tflite::TFLITE_LOG_INFO,
+                  "Cache structure dumped to: %s", dump_file_path.c_str());
+  return true;
+}
+
+std::string StreamingWeightCacheProvider::DumpWeightCacheStructure() const {
+  std::ostringstream oss;
+  
+  // 헤더 정보 출력
+  oss << "=== XNNPack Weight Cache Structure Dump ===\n\n";
+  
+  if (mmap_handles_.empty()) {
+    oss << "Cache not loaded.\n";
+    return oss.str();
+  }
+  
+  const MMapHandle& mmap_handle = mmap_handles_.front();
+  
+  // 파일 기본 정보
+  oss << "File Information:\n";
+  oss << "  Total file size: " << mmap_handle.size() << " bytes (" 
+      << std::fixed << std::setprecision(2) << (mmap_handle.size() / 1024.0 / 1024.0) << " MB)\n";
+  oss << "  File path: " << file_path_ << "\n\n";
+  
+  // 헤더 정보 추출 및 출력
+  if (mmap_handle.size() < sizeof(XNNPackCacheHeader)) {
+    oss << "File too small to contain valid header.\n";
+    return oss.str();
+  }
+  
+  XNNPackCacheHeader header;
+  memcpy(&header, mmap_handle.data(), sizeof(header));
+  
+  oss << "Header Information:\n";
+  oss << "  Version: " << header.version << " (expected: " << XNNPackCacheHeader::kVersion << ")\n";
+  oss << "  XNNPack build identifier: ";
+  for (size_t i = 0; i < sizeof(header.xnnpack_build_identifier); ++i) {
+    oss << std::hex << std::setw(2) << std::setfill('0') 
+        << static_cast<unsigned>(header.xnnpack_build_identifier[i]);
+  }
+  oss << std::dec << "\n";
+  oss << "  Buffer list offset: " << header.buffer_list_offset << " bytes (" 
+      << std::fixed << std::setprecision(2) << (header.buffer_list_offset / 1024.0 / 1024.0) << " MB)\n";
+  oss << "  Buffer list size: " << header.buffer_list_size << " bytes\n";
+  oss << "  Data section size: " << (header.buffer_list_offset - sizeof(header)) << " bytes ("
+      << std::fixed << std::setprecision(2) << ((header.buffer_list_offset - sizeof(header)) / 1024.0 / 1024.0) << " MB)\n\n";
+  
+  // FlatBuffer 파싱 (검증은 스킵)
+  if (header.buffer_list_offset >= mmap_handle.size() ||
+      header.buffer_list_size != mmap_handle.size() - header.buffer_list_offset) {
+    oss << "Invalid buffer list offset/size.\n";
+    return oss.str();
+  }
+  
+  const cache::schema::BufferList* buffer_list = cache::schema::GetBufferList(
+      mmap_handle.data() + header.buffer_list_offset);
+  
+  if (!buffer_list) {
+    oss << "Failed to parse BufferList from FlatBuffer.\n";
+    return oss.str();
+  }
+  
+  // BufferList 정보 출력
+  oss << "FlatBuffer BufferList Information:\n";
+  oss << "  Base offset: " << buffer_list->base_offset() << " bytes\n";
+  
+  const auto buffers = buffer_list->buffers();
+  if (!buffers) {
+    oss << "  No buffers found.\n";
+    return oss.str();
+  }
+  
+  oss << "  Number of buffers: " << buffers->size() << "\n\n";
+  
+  // 각 버퍼 정보 출력
+  oss << "Buffer Details:\n";
+  oss << std::left << std::setfill(' ')  // fill을 공백으로 명시적 설정
+      << std::setw(6) << "Index"
+      << " | " << std::setw(12) << "Pack Algo ID"
+      << " | " << std::setw(12) << "Weights ID"  
+      << " | " << std::setw(12) << "Bias ID"
+      << " | " << std::setw(10) << "Offset"
+      << " | " << std::setw(10) << "Size"
+      << " | " << std::setw(16) << "Absolute Addr"
+      << " | " << "Memory Range\n";
+  oss << std::string(105, '-') << "\n";
+  
+  for (size_t i = 0; i < buffers->size(); ++i) {
+    const auto* buffer = buffers->Get(i);
+    if (!buffer) {
+      oss << std::setw(6) << i << " | NULL BUFFER\n";
+      continue;
+    }
+    
+    const uint64_t abs_offset = buffer_list->base_offset() + buffer->offset();
+    const void* addr = mmap_handle.data() + abs_offset;
+    
+    // Bias ID 표시 처리
+    std::string bias_str = (buffer->bias_id() == PackIdentifier::kNoId) ? "None" : std::to_string(buffer->bias_id());
+    
+    // 헥스 주소를 별도로 포맷팅
+    std::ostringstream addr_stream;
+    addr_stream << "0x" << std::hex << std::setfill('0') << std::setw(12) << reinterpret_cast<uintptr_t>(addr);
+    
+    oss << std::left << std::setfill(' ')  // fill을 공백으로 명시적 설정
+        << std::setw(6) << i
+        << " | " << std::setw(12) << buffer->packing_algorithm_id()
+        << " | " << std::setw(12) << buffer->weights_id()
+        << " | " << std::setw(12) << bias_str
+        << " | " << std::setw(10) << buffer->offset()
+        << " | " << std::setw(10) << buffer->size()
+        << " | " << std::setw(16) << addr_stream.str()
+        << " | [" << abs_offset << "-" << (abs_offset + buffer->size() - 1) << "]\n";
+  }
+  
+  oss << "\n";
+  
+  // 내부 캐시 상태 출력
+  oss << "Internal Cache State:\n";
+  oss << "  cache_key_to_offset_ entries: " << cache_key_to_offset_.size() << "\n";
+  oss << "  offset_to_addr_ entries: " << offset_to_addr_.size() << "\n";
+  oss << "  mmap_buffer_base_offset_: " << mmap_buffer_base_offset_ << "\n";
+  oss << "  Number of mmap handles: " << mmap_handles_.size() << "\n\n";
+  
+  // 캐시 키 매핑 정보 (처음 10개만)
+  if (!cache_key_to_offset_.empty()) {
+    oss << "Cache Key Mappingss :\n";
+    oss << std::left << std::setfill(' ')  // fill을 공백으로 명시적 설정
+        << std::setw(12) << "Pack Algo ID"
+        << " | " << std::setw(12) << "Weights ID"
+        << " | " << std::setw(12) << "Bias ID"
+        << " | " << std::setw(10) << "Offset"
+        << " | " << std::setw(10) << "Size\n";
+    oss << std::string(75, '-') << "\n";
+    
+    size_t count = 0;
+    for (const auto& [pack_id, location] : cache_key_to_offset_) {
+      std::string bias_str = (pack_id.bias_id == PackIdentifier::kNoId) ? "None" : std::to_string(pack_id.bias_id);
+      
+      oss << std::left << std::setfill(' ')  // fill을 공백으로 명시적 설정
+          << std::setw(12) << pack_id.pack_algorithm_id
+          << " | " << std::setw(12) << pack_id.weights_id
+          << " | " << std::setw(12) << bias_str
+          << " | " << std::setw(10) << location.offset
+          << " | " << std::setw(10) << location.size << "\n";
+      ++count;
+    }
+  }
+  
+  return oss.str();
+}
+
+bool StreamingWeightCacheProvider::DumpTensorIdentifierMapToFile(const std::string& dump_file_path) const {
+  std::ofstream file(dump_file_path);
+  if (!file.is_open()) {
+    TFLITE_LOG_PROD(tflite::TFLITE_LOG_ERROR,
+                    "Failed to open dump file: %s", dump_file_path.c_str());
+    return false;
+  }
+
+  file << DumpTensorIdentifierMap();
+  file.close();
+  
+  TFLITE_LOG_PROD(tflite::TFLITE_LOG_INFO,
+                  "Cache structure dumped to: %s", dump_file_path.c_str());
+  return true;
+}
+
+std::string StreamingWeightCacheProvider::DumpTensorIdentifierMap() const {
+  std::ostringstream oss;
+  oss << "=== Tensor Address → WeightCache Identifier Map ===\n";
+  if (buffer_address_to_identifier_.empty()) {
+    oss << " (empty)\n";
+    return oss.str();
+  }
+
+  for (const auto& [addr, identifier] : buffer_address_to_identifier_) {
+    oss << "  Addr: " << addr 
+        << " -> Identifier: " << identifier << "\n";
+  }
+  return oss.str();
+}
 
 
 }  // namespace tflite::xnnpack

@@ -102,6 +102,8 @@ class StreamingWeightCacheProvider {
       const TfLiteTensor* tensors, size_t size,
       const std::unordered_map<size_t, size_t>& tensor_index_to_identifier);
 
+  bool DumpTensorIdentifierMapToFile(const std::string& dump_file_path) const ;
+  std::string DumpTensorIdentifierMap() const;
   // In case a constant buffer data needs to be moved for some reason, this will
   // map the new buffer data to its identifier.
   void RemapDataBuffer(const void* buffer, const void* new_buffer);
@@ -153,6 +155,15 @@ class StreamingWeightCacheProvider {
 
   // Returns the cache provider expected by XNNPack.
   xnn_weights_cache_provider& GetCacheProvider() { return cache_provider_; }
+
+  // 캐시 구조를 사람이 읽을 수 있는 형태로 덤프
+  std::string DumpWeightCacheStructure() const;
+  
+  // 덤프 결과를 파일로 저장
+  bool DumpWeightCacheStructureToFile(const std::string& dump_file_path) const;
+  
+  // 간단한 통계 정보 반환
+  std::string GetWeightCacheStats() const;
 
   // C interface: `xnn_weights_cache_provider` callback.
   static size_t look_up(void* context,
@@ -233,6 +244,15 @@ class StreamingWeightCacheProvider {
   // Stores the loaded buffer addresses corresponding to the given offset in the
   // cache file.
   std::map<size_t, void*> offset_to_addr_;
+};
+
+
+class ChunkManagementModule{
+    //TODO: Chunk management logic 
+
+};
+class MemoryPrefetchModule{
+    // Prefetching logic for memory managem
 };
 
 }  // namespace xnnpack

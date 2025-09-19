@@ -205,6 +205,14 @@ TFL_CAPI_EXPORT void TfLiteXNNPackDelegateWeightsCacheDelete(
 
 TFL_CAPI_EXPORT void TfLiteXNNPackDelegateInspect(void* delegate, void* out_ostream, const char* indent_str);
 
+// Dumps internal weight cache provider state (if any) to the provided std::ostream.
+// out_ostream: can be NULL -> defaults to std::cout. Format is a simple JSON-like
+// one-liner for easy grepping/log ingestion. Best-effort: absence of extended
+// provider metadata will simply omit fields.
+// WARNING: Experimental / debugging API.
+TFL_CAPI_EXPORT void TfLiteXNNPackDelegateDumpWeightCacheState(
+    TfLiteDelegate* delegate, void* out_ostream);
+
 #ifdef __cplusplus
 }
 #endif  // __cplusplus

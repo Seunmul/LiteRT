@@ -55,6 +55,7 @@ limitations under the License.
 #include "tflite/delegates/xnnpack/flexbuffers_util.h"
 #include "tflite/delegates/xnnpack/quantization_util.h"
 #include "tflite/delegates/xnnpack/weight_cache.h"
+#include "tflite/delegates/xnnpack/streaming_weight_cache.h" // Experimental to support weight streaming
 #include "tflite/experimental/resource/resource_variable.h"
 #include "tflite/kernels/cpu_backend_context.h"
 #include "tflite/kernels/internal/tensor_ctypes.h"
@@ -75,6 +76,13 @@ struct TfLiteXNNPackDelegateWeightsCache;
 namespace tflite {
 namespace xnnpack {
 namespace {
+
+// Select weight cache provider implementation at build time.
+#ifdef USE_WEIGHT_STREAMING
+using WeightCacheProviderT = StreamingWeightCacheProvider;
+#else
+using WeightCacheProviderT = MMapWeightCacheProvider;
+#endif
 
 // VisitDotAttentionNode uses a clamp to add a constant value to the XNNPack
 // subgraph. The constant data must outlive the XNNPack delegate and there is no
@@ -618,12 +626,20 @@ class Delegate {
 
     // If no weight cache is provided, add one when requested.
     if (!options_.weights_cache) {
-      // Use a manually provided weight cache provider.
+      
+        // Use a manually provided weight cache provider.
       if (options_.weight_cache_provider) {
-        weight_cache_provider_ = maybe_unique_ptr<MMapWeightCacheProvider>(
-            reinterpret_cast<MMapWeightCacheProvider*>(
-                options_.weight_cache_provider),
-            kNotOwned);
+        TFLITE_LOG_PROD(tflite::TFLITE_LOG_INFO, "XNNPack weight cache provider manually overridden.");
+        // Prevent destructor side-effects of the default-constructed provider
+        // when replacing it with a manually supplied provider.
+        if (weight_cache_provider_.owning()) {
+          // Intentionally leak the default provider to avoid potential
+          // destructor-time dependencies before the delegate is fully set up.
+          // This code path is only used when an external provider is supplied.
+          (void)weight_cache_provider_.release();
+        }
+        auto* external_provider = reinterpret_cast<WeightCacheProviderT*>(options_.weight_cache_provider);
+        weight_cache_provider_ = maybe_unique_ptr<WeightCacheProviderT>(external_provider, kNotOwned);
       }
       // Try to setup the cache provider if necessary.
       if (!weight_cache_provider_->IsActive() &&
@@ -657,17 +673,18 @@ class Delegate {
         options_.weights_cache =
             reinterpret_cast<TfLiteXNNPackDelegateWeightsCache*>(
                 weight_cache_provider_->GetCacheProvider().context);
-        options_.weight_cache_file_path =
-            weight_cache_provider_->GetFilePath().data();
+        options_.weight_cache_file_path = weight_cache_provider_->GetFilePath().data();
+
+
       } else {
-        TFLITE_LOG(tflite::TFLITE_LOG_VERBOSE,
+        TFLITE_LOG_PROD(tflite::TFLITE_LOG_VERBOSE,
                    "XNNPack weight cache not enabled.");
       }
     }
   }
 
   TfLiteIntArray* PrepareOpsToDelegate(TfLiteContext* context);
-  TfLiteDelegate* tflite_delegate() { return &delegate_; }
+  TfLiteDelegate* tflite_delegate() { return &delegate_; };
 
   bool support_signed_8bit_quantization() const {
     return (options_.flags & TFLITE_XNNPACK_DELEGATE_FLAG_QS8) != 0;
@@ -838,8 +855,7 @@ class Delegate {
 
   // If no weight cache is provided and a cache is set in the delegate options,
   // this will be used as a weight cache.
-  maybe_unique_ptr<MMapWeightCacheProvider> weight_cache_provider_{
-      new MMapWeightCacheProvider(), kOwned};
+  maybe_unique_ptr<WeightCacheProviderT> weight_cache_provider_{new WeightCacheProviderT(), kOwned};
 
   // A map of `f16`->`f32` dequantization tensor indices that will be skipped in
   // the XNNPACK subgraph.
@@ -884,8 +900,10 @@ TfLiteStatus InvokeVarHandle(TfLiteContext* context,
   return kTfLiteOk;
 }
 
+
 class Subgraph {
  public:
+ //!TODO -> Hooking logic for Weight Streaming will go here
   static Subgraph* Create(TfLiteContext* context,
                           const TfLiteDelegateParams* params,
                           Delegate& delegate) {
@@ -900,13 +918,16 @@ class Subgraph {
       subgraph_index = this_subgraph->GetSubgraphIndex();
     }
     // Map tensors identifiers before packing anything.
+ //!TODO -> Hooking logic for Weight Streaming will go here
+
     if (delegate.weight_cache_provider_->IsActive()) {
       delegate.weight_cache_provider_->MapTensorIdentifiers(
           context->tensors, context->tensors_size,
           reinterpret_cast<tflite::Subgraph*>(context->impl_)
               ->GetTensorBufferIdentifiers());
     }
-
+    
+    
     // Convert subgraph inputs and outputs to hash sets for faster lookup.
     const std::unordered_set<int> inputs(
         &params->input_tensors->data[0],
@@ -1196,32 +1217,28 @@ class Subgraph {
     }
     flags |= delegate.runtime_flags();
 
-    if (delegate.weight_cache_provider_->IsActive() &&
-        delegate.weight_cache_provider_->CanStartBuildStep()) {
+ //!TODO -> Hooking logic for Weight Streaming will go here
+    if (delegate.weight_cache_provider_->IsActive() && delegate.weight_cache_provider_->CanStartBuildStep()) {
       if (!delegate.weight_cache_provider_->StartBuildStep()) {
-        TF_LITE_KERNEL_LOG(
-            context, "XNNPack delegate failed to start cache build step.");
+        TF_LITE_KERNEL_LOG(context, "XNNPack delegate failed to start cache build step.");
         return nullptr;
       }
     }
-    TFLITE_LOG_PROD(tflite::TFLITE_LOG_VERBOSE,
-                    "SubgraphCreate: creating XNNPACK runtime with flags: %u",
-                    flags);
+    TFLITE_LOG_PROD(tflite::TFLITE_LOG_VERBOSE,"SubgraphCreate: creating XNNPACK runtime with flags: %u",flags);
     status = xnn_create_runtime_v4(subgraph.get(), delegate.weights_cache(),
                                    delegate.workspace(), delegate.threadpool(),
                                    flags, &runtime_ptr);
 
-     TFLITE_LOG_PROD(tflite::TFLITE_LOG_VERBOSE,
-                    "SubgraphCreate: created XNNPACK runtime ");
+    TFLITE_LOG_PROD(tflite::TFLITE_LOG_VERBOSE, "SubgraphCreate: created XNNPACK runtime ");
 
-    if (delegate.weight_cache_provider_->IsActive() &&
-        delegate.weight_cache_provider_->CanStartBuildStep()) {
+    if (delegate.weight_cache_provider_->IsActive() && delegate.weight_cache_provider_->CanStartBuildStep()) {
       if (!delegate.weight_cache_provider_->StopBuildStep()) {
-        TF_LITE_KERNEL_LOG(context,
-                           "XNNPack delegate failed to stop cache build step.");
+        TF_LITE_KERNEL_LOG(context,"XNNPack delegate failed to stop cache build step.");
         return nullptr;
       }
     }
+ //!TODO -> Hooking logic for Weight Streaming will go here
+
     if (status != xnn_status_success) {
       TF_LITE_KERNEL_LOG(context, "failed to create XNNPACK runtime");
       return nullptr;
