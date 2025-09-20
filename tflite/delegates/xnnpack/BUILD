@@ -246,6 +246,7 @@ cc_library(
         ":tflite_with_xnnpack_qu8",  # buildcleaner: keep
         ":tflite_with_xnnpack_transient_indirection_buffer",  # buildcleaner: keep
         ":weight_cache",
+        ":streaming_weight_cache",
         "//tflite:array",
         "//tflite:kernel_api",
         "//tflite:minimal_logging",
@@ -355,6 +356,16 @@ cc_library(
         "@XNNPACK",
         "@flatbuffers//:runtime_cc",
     ],
+)
+
+cc_library(
+    name = "streaming_weight_cache",
+    srcs = ["streaming_weight_cache.cc"],
+    hdrs = ["streaming_weight_cache.h"],
+    compatible_with = get_compatible_with_portable(),
+    deps = [
+        ":weight_cache"
+    ]
 )
 
 cc_library(

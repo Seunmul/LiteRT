@@ -14,6 +14,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <unistd.h> // for direct io
 #include <fstream>
 #include <iomanip>
 #include <memory>
@@ -34,6 +35,8 @@
 
 #include "tflite/delegates/xnnpack/weight_cache.h"
 #include "tflite/delegates/xnnpack/streaming_weight_cache.h"
+
+
 
 #define XNNPACK_ABORT_CHECK(TEST, ...)                      \
   if (!(TEST)) {                                            \
@@ -416,15 +419,7 @@ size_t StreamingWeightCacheProvider::LookUpOrInsert(
 }
 
 //! READY FOR IMPLEMENT DOUBLE BUFFERING
-struct DoubleBufferResolver {
-  size_t logical_offset;         // 오퍼레이터에서 보는 논리 offset
-  size_t buffer_offset[2];       // 실제 mmap된 두 개의 버퍼 offset
-  int active;                    // 현재 실행 중인 버퍼 인덱스 (0 or 1)
-  int prefetch;                  // 백그라운드에서 채우는 버퍼 인덱스
-  std::string debug_tag;         // FC, CONV 등 디버그용 태그
-};
 
-std::unordered_map<size_t, DoubleBufferResolver> double_buffer_resolvers_;
 
 
 // void StreamingWeightCacheProvider::FlipBuffer(size_t logical_offset) {
@@ -434,18 +429,62 @@ std::unordered_map<size_t, DoubleBufferResolver> double_buffer_resolvers_;
 
 //! READY FOR IMPLEMENT DOUBLE BUFFERING -> We need to modify this function to return the address from the active buffer
 
-// void* StreamingWeightCacheProvider::OffsetToAddr(const size_t offset) {
-//   // double buffer resolver가 있으면 active buffer 선택
-//   auto it = double_buffer_resolvers_.find(offset);
-//   if (it != double_buffer_resolvers_.end()) {
-//     const DoubleBufferResolver& resolver = it->second;
-//     size_t real_offset = resolver.buffer_offset[resolver.active];
-//     return offset_to_addr_.at(real_offset);
-//   }
+void StreamingWeightCacheProvider::InitManagedBuffer(size_t size) {
+  managed_size_ = size;
 
-//   // 기본 경로
+  // 보통 4096 정렬 (파일시스템 블록 사이즈 기준)
+  const size_t alignment = 4096;  
+  for (int i = 0; i < 2; ++i) {
+    if (posix_memalign(&managed_buffer_[i], alignment, size) != 0) {
+      perror("posix_memalign failed");
+      managed_buffer_[i] = nullptr;
+      managed_size_ = 0;
+      return;
+    }
+    // Zero-fill
+    memset(managed_buffer_[i], 0, size);
+  }
+}
+
+void* StreamingWeightCacheProvider::OffsetToAddr(const size_t offset) {
+  // While the cache is being built, the buffer could grow and need to be
+  // reallocated so we cannot ensure pointer stability.
+  XNNPACK_ABORT_CHECK(
+      !IsBuilding(),
+      "Cannot get the address of a buffer in a cache during a building step.");
+  
+  if (managed_buffer_[active_buffer_index_] != nullptr) {
+    printf("Managed buffer used for offset: %zu\n", offset);
+    return static_cast<uint8_t*>(managed_buffer_[active_buffer_index_]) + offset;
+  }
+
+// //   // 기본 경로
+//   printf("fallback to mmap for offset: %zu\n", offset);
 //   return offset_to_addr_.at(offset);
-// }
+}
+
+
+void StreamingWeightCacheProvider::PrefetchFromFile(const std::string& filename) {
+    int fd = open(filename.c_str(), O_RDONLY | O_DIRECT);
+    if (fd < 0) {
+        perror("open failed");
+        return;
+    }
+
+    // 예: 전체 weights 파일을 managed buffer에 다 읽기
+    size_t total = 0;
+    while (total < managed_size_) {
+        ssize_t n = read(fd,
+                         static_cast<uint8_t*>(managed_buffer_[0]) + total,
+                         managed_size_ - total);
+        if (n <= 0) break;
+        total += n;
+    }
+
+    close(fd);
+    printf("Readed %zu bytes into managed buffer, with O_DIRECT\n", total);
+}
+
 
 // // prefetch thread
 // void Prefetch(DoubleBufferResolver& resolver, const void* data, size_t size) {
@@ -455,14 +494,14 @@ std::unordered_map<size_t, DoubleBufferResolver> double_buffer_resolvers_;
 // }
 
 
-void* StreamingWeightCacheProvider::OffsetToAddr(const size_t offset) {
-  // While the cache is being built, the buffer could grow and need to be
-  // reallocated so we cannot ensure pointer stability.
-  XNNPACK_ABORT_CHECK(
-      !IsBuilding(),
-      "Cannot get the address of a buffer in a cache during a building step.");
-  return offset_to_addr_[offset];
-}
+// void* StreamingWeightCacheProvider::OffsetToAddr(const size_t offset) {
+//   // While the cache is being built, the buffer could grow and need to be
+//   // reallocated so we cannot ensure pointer stability.
+//   XNNPACK_ABORT_CHECK(
+//       !IsBuilding(),
+//       "Cannot get the address of a buffer in a cache during a building step.");
+//   return offset_to_addr_[offset];
+// }
 
 
 void StreamingWeightCacheProvider::Release() {

@@ -165,6 +165,11 @@ class StreamingWeightCacheProvider {
   // 간단한 통계 정보 반환
   std::string GetWeightCacheStats() const;
 
+  void InitManagedBuffer(size_t size);
+
+  void PrefetchFromFile(const std::string& filename);
+
+
   // C interface: `xnn_weights_cache_provider` callback.
   static size_t look_up(void* context,
                         const xnn_weights_cache_look_up_key* cache_key);
@@ -244,6 +249,20 @@ class StreamingWeightCacheProvider {
   // Stores the loaded buffer addresses corresponding to the given offset in the
   // cache file.
   std::map<size_t, void*> offset_to_addr_;
+
+  //! READY FOR IMPLEMENT DOUBLE BUFFERING -> We need to modify this function to return the address from the active buffer
+  void* managed_buffer_[2] = {nullptr, nullptr};
+  size_t managed_size_ = 0;
+  int active_buffer_index_ = 0;
+
+  struct BufferEntry {
+    void* buffers[2];   // double buffer 실제 주소
+    int active;         // 현재 active 버퍼 인덱스
+    size_t size;        // 버퍼 크기
+  };
+  
+  std::unordered_map<size_t, BufferEntry> offset_to_entry_;
+ 
 };
 
 
