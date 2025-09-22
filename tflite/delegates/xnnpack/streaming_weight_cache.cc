@@ -392,6 +392,7 @@ size_t StreamingWeightCacheProvider::LookUp(
   return SIZE_MAX;
 }
 
+
 void* StreamingWeightCacheProvider::ReserveSpace(size_t size) {
   XNNPACK_ABORT_CHECK(IsBuilding(),
                       "Cannot reserve space in a cache that isn't building.");
@@ -416,6 +417,39 @@ size_t StreamingWeightCacheProvider::LookUpOrInsert(
                       "Inserting data in the cache failed.");
   cache_key_to_offset_.emplace(pack_id, location);
   return location.offset;
+}
+
+
+void* StreamingWeightCacheProvider::OffsetToAddr(const size_t offset) {
+  // While the cache is being built, the buffer could grow and need to be
+  // reallocated so we cannot ensure pointer stability.
+  XNNPACK_ABORT_CHECK(
+      !IsBuilding(),
+      "Cannot get the address of a buffer in a cache during a building step.");
+  
+  if (managed_buffer_[active_buffer_index_] != nullptr) {
+    // printf("Managed buffer used for offset: %zu\n", offset);
+    return static_cast<uint8_t*>(managed_buffer_[active_buffer_index_]) + offset;
+  }
+
+  // 기본 경로
+//   printf("fallback to mmap for offset: %zu\n", offset);
+  return offset_to_addr_.at(offset);
+}
+
+
+/******************************** */
+
+size_t StreamingWeightCacheProvider::LookUpByIds(size_t pack_algorithm_id,
+                                                 size_t weights_id,
+                                                 size_t bias_id) {
+  PackIdentifier pid{ /*pack_algorithm_id=*/pack_algorithm_id,
+                      /*weights_id=*/weights_id,
+                      /*bias_id=*/bias_id };
+  if (auto it = cache_key_to_offset_.find(pid); it != cache_key_to_offset_.end()) {
+    return it->second.offset;
+  }
+  return SIZE_MAX;
 }
 
 //! READY FOR IMPLEMENT DOUBLE BUFFERING
@@ -446,132 +480,13 @@ void StreamingWeightCacheProvider::InitManagedBuffer(size_t size) {
   }
 }
 
-void* StreamingWeightCacheProvider::OffsetToAddr(const size_t offset) {
-  // While the cache is being built, the buffer could grow and need to be
-  // reallocated so we cannot ensure pointer stability.
-  XNNPACK_ABORT_CHECK(
-      !IsBuilding(),
-      "Cannot get the address of a buffer in a cache during a building step.");
-  
-  if (managed_buffer_[active_buffer_index_] != nullptr) {
-    printf("Managed buffer used for offset: %zu\n", offset);
-    return static_cast<uint8_t*>(managed_buffer_[active_buffer_index_]) + offset;
-  }
 
-// //   // 기본 경로
-//   printf("fallback to mmap for offset: %zu\n", offset);
-//   return offset_to_addr_.at(offset);
+void* StreamingWeightCacheProvider::GetMmappedAddr(size_t offset) {
+  auto it = offset_to_addr_.find(offset);
+  if (it != offset_to_addr_.end()) return it->second;
+  return nullptr;
 }
 
-
-void StreamingWeightCacheProvider::PrefetchFromFile(const std::string& filename) {
-    int fd = open(filename.c_str(), O_RDONLY | O_DIRECT);
-    if (fd < 0) {
-        perror("open failed");
-        return;
-    }
-
-    // 예: 전체 weights 파일을 managed buffer에 다 읽기
-    size_t total = 0;
-    while (total < managed_size_) {
-        ssize_t n = read(fd,
-                         static_cast<uint8_t*>(managed_buffer_[0]) + total,
-                         managed_size_ - total);
-        if (n <= 0) break;
-        total += n;
-    }
-
-    close(fd);
-    printf("Readed %zu bytes into managed buffer, with O_DIRECT\n", total);
-}
-
-
-// // prefetch thread
-// void Prefetch(DoubleBufferResolver& resolver, const void* data, size_t size) {
-//   size_t prefetch_offset = resolver.buffer_offset[resolver.prefetch];
-//   void* dst = offset_to_addr_.at(prefetch_offset);
-//   memcpy(dst, data, size);
-// }
-
-
-// void* StreamingWeightCacheProvider::OffsetToAddr(const size_t offset) {
-//   // While the cache is being built, the buffer could grow and need to be
-//   // reallocated so we cannot ensure pointer stability.
-//   XNNPACK_ABORT_CHECK(
-//       !IsBuilding(),
-//       "Cannot get the address of a buffer in a cache during a building step.");
-//   return offset_to_addr_[offset];
-// }
-
-
-void StreamingWeightCacheProvider::Release() {
-  buffer_address_to_identifier_.clear();
-  cache_key_to_offset_.clear();
-  mmap_handles_.clear();
-  mmap_buffer_base_offset_ = 0;
-  builder_ = WeightCacheBuilder();
-}
-
-size_t StreamingWeightCacheProvider::look_up(
-    void* context, const xnn_weights_cache_look_up_key* cache_key) {
-  return reinterpret_cast<StreamingWeightCacheProvider*>(context)->LookUp(cache_key);
-}
-
-void* StreamingWeightCacheProvider::reserve_space(void* context, size_t n) {
-  return reinterpret_cast<StreamingWeightCacheProvider*>(context)->ReserveSpace(n);
-}
-
-size_t StreamingWeightCacheProvider::look_up_or_insert(
-    void* context, const xnn_weights_cache_look_up_key* cache_key, void* ptr,
-    size_t size) {
-  return reinterpret_cast<StreamingWeightCacheProvider*>(context)->LookUpOrInsert(
-      cache_key, ptr, size);
-}
-
-bool StreamingWeightCacheProvider::is_finalized(void* context) {
-  return reinterpret_cast<StreamingWeightCacheProvider*>(context)->IsActive();
-}
-
-void* StreamingWeightCacheProvider::offset_to_addr(void* context, size_t offset) {
-  return reinterpret_cast<StreamingWeightCacheProvider*>(context)->OffsetToAddr(
-      offset);
-}
-
-enum xnn_status StreamingWeightCacheProvider::delete_cache(void* context) {
-  reinterpret_cast<StreamingWeightCacheProvider*>(context)->Release();
-  return xnn_status_success;
-}
-
-PackIdentifier StreamingWeightCacheProvider::BuildPackIdentifier(
-    const xnn_weights_cache_look_up_key& key) {
-  const auto get_buffer_id = [&](const void* buffer) -> size_t {
-    if (buffer) {
-      const auto identifier_it = buffer_address_to_identifier_.find(buffer);
-      if (identifier_it != buffer_address_to_identifier_.end()) {
-        return identifier_it->second;
-      }
-      // We could have several layers of remapping. We look through
-      // buffer_remaps_ until we find a valid identifier or nothing is mapped to
-      // the current buffer pointer.
-      auto remapped_it = buffer_remaps_.find(buffer);
-      while (remapped_it != buffer_remaps_.end()) {
-        const auto remapped_identifier_it =
-            buffer_address_to_identifier_.find(remapped_it->second);
-        if (remapped_identifier_it != buffer_address_to_identifier_.end()) {
-          return remapped_identifier_it->second;
-        }
-        remapped_it = buffer_remaps_.find(remapped_it->second);
-      }
-      XNNPACK_ABORT_CHECK(
-          remapped_it != buffer_remaps_.end(),
-          "Unknown constant buffer passed to BuildPackIdentifier.");
-    }
-    return PackIdentifier::kNoId;
-  };
-  return PackIdentifier{/*pack_algorithm_id=*/key.seed,
-                        /*weights_id=*/get_buffer_id(key.kernel),
-                        /*bias_id=*/get_buffer_id(key.bias)};
-}
 
 std::string StreamingWeightCacheProvider::GetWeightCacheStats() const {
   std::ostringstream oss;
@@ -678,16 +593,32 @@ std::string StreamingWeightCacheProvider::DumpWeightCacheStructure() const {
   
   // 각 버퍼 정보 출력
   oss << "Buffer Details:\n";
+  // 설명 추가: base_offset, mmap base pointer, 메모리 범위 계산 방식
+  oss << "  NOTE: This dump reflects the weight cache FILE layout (static) and the process mapping / runtime addresses (dynamic).\n";
+  oss << "        Columns marked [STATIC] come from the on-disk FlatBuffer file;\n";
+  oss << "        Columns marked [DYNAMIC] are process/runtime values (vary by execution).\n";
+  oss << "  Note: 'Offset' is buffer->offset(), relative to BufferList.base_offset() [STATIC].\n";
+  oss << "        'Memory Range' is [base_offset + offset, base_offset + offset + size - 1] (file byte offsets) [STATIC].\n";
+  oss << "        'Mmapped Addr' is the process virtual address where the file was mapped: mmap_base_ptr + (base_offset + offset) [DYNAMIC].\n";
+  // mmap base pointer (헥스) 출력
+  {
+    std::ostringstream mbp;
+    mbp << "0x" << std::hex << std::setfill('0') << std::setw(12)
+        << reinterpret_cast<uintptr_t>(mmap_handle.data());
+    oss << "  mmap base pointer: " << mbp.str() << " (process virtual address base)\n";
+  }
+  // Indicate whether cache is file-backed or in-memory special path
+  oss << "  Cache type: " << (IsInMemoryCachePath(file_path_) ? "IN-MEMORY (special)" : "FILE-BACKED") << "\n";
   oss << std::left << std::setfill(' ')  // fill을 공백으로 명시적 설정
       << std::setw(6) << "Index"
+      << " | " << std::setw(12) << "Buffer ID"  
       << " | " << std::setw(12) << "Pack Algo ID"
-      << " | " << std::setw(12) << "Weights ID"  
       << " | " << std::setw(12) << "Bias ID"
       << " | " << std::setw(10) << "Offset"
       << " | " << std::setw(10) << "Size"
-      << " | " << std::setw(16) << "Absolute Addr"
-      << " | " << "Memory Range\n";
-  oss << std::string(105, '-') << "\n";
+      << " | " << std::setw(22) << "Mmapped Addr [DYNAMIC]"
+      << " | " << std::setw(16) << "Memory Range [DYNAMIC]\n";
+  oss << std::string(120, '-') << "\n";
   
   for (size_t i = 0; i < buffers->size(); ++i) {
     const auto* buffer = buffers->Get(i);
@@ -713,35 +644,34 @@ std::string StreamingWeightCacheProvider::DumpWeightCacheStructure() const {
         << " | " << std::setw(12) << bias_str
         << " | " << std::setw(10) << buffer->offset()
         << " | " << std::setw(10) << buffer->size()
-        << " | " << std::setw(16) << addr_stream.str()
+        << " | " << std::setw(22) << addr_stream.str()
         << " | [" << abs_offset << "-" << (abs_offset + buffer->size() - 1) << "]\n";
   }
   
   oss << "\n";
   
-  // 내부 캐시 상태 출력
-  oss << "Internal Cache State:\n";
+  
+  oss << "Internal Cache State in Weight Cache:\n";
   oss << "  cache_key_to_offset_ entries: " << cache_key_to_offset_.size() << "\n";
   oss << "  offset_to_addr_ entries: " << offset_to_addr_.size() << "\n";
   oss << "  mmap_buffer_base_offset_: " << mmap_buffer_base_offset_ << "\n";
   oss << "  Number of mmap handles: " << mmap_handles_.size() << "\n\n";
   
-  // 캐시 키 매핑 정보 (처음 10개만)
   if (!cache_key_to_offset_.empty()) {
     oss << "Cache Key Mappingss :\n";
-    oss << std::left << std::setfill(' ')  // fill을 공백으로 명시적 설정
-        << std::setw(12) << "Pack Algo ID"
-        << " | " << std::setw(12) << "Weights ID"
-        << " | " << std::setw(12) << "Bias ID"
-        << " | " << std::setw(10) << "Offset"
-        << " | " << std::setw(10) << "Size\n";
+    oss << std::left << std::setfill(' ')  
+    << std::setw(12) << "Buffer ID"
+    << " | " << std::setw(12) << "Pack Algo ID"
+    << " | " << std::setw(12) << "Bias ID"
+    << " | " << std::setw(10) << "Offset"
+    << " | " << std::setw(10) << "Size\n";
     oss << std::string(75, '-') << "\n";
     
     size_t count = 0;
     for (const auto& [pack_id, location] : cache_key_to_offset_) {
       std::string bias_str = (pack_id.bias_id == PackIdentifier::kNoId) ? "None" : std::to_string(pack_id.bias_id);
       
-      oss << std::left << std::setfill(' ')  // fill을 공백으로 명시적 설정
+      oss << std::left << std::setfill(' ')  
           << std::setw(12) << pack_id.pack_algorithm_id
           << " | " << std::setw(12) << pack_id.weights_id
           << " | " << std::setw(12) << bias_str
@@ -783,6 +713,119 @@ std::string StreamingWeightCacheProvider::DumpTensorIdentifierMap() const {
         << " -> Identifier: " << identifier << "\n";
   }
   return oss.str();
+}
+
+
+void StreamingWeightCacheProvider::PrefetchFromFile(const std::string& filename) {
+    int fd = open(filename.c_str(), O_RDONLY | O_DIRECT);
+    if (fd < 0) {
+        perror("open failed");
+        return;
+    }
+
+    // 예: 전체 weights 파일을 managed buffer에 다 읽기
+    size_t total = 0;
+    while (total < managed_size_) {
+        ssize_t n = read(fd,
+                         static_cast<uint8_t*>(managed_buffer_[0]) + total,
+                         managed_size_ - total);
+        if (n <= 0) break;
+        total += n;
+    }
+
+    close(fd);
+    printf("Readed %zu bytes into managed buffer, with O_DIRECT\n", total);
+}
+
+
+// // prefetch thread
+// void Prefetch(DoubleBufferResolver& resolver, const void* data, size_t size) {
+//   size_t prefetch_offset = resolver.buffer_offset[resolver.prefetch];
+//   void* dst = offset_to_addr_.at(prefetch_offset);
+//   memcpy(dst, data, size);
+// }
+
+
+// void* StreamingWeightCacheProvider::OffsetToAddr(const size_t offset) {
+//   // While the cache is being built, the buffer could grow and need to be
+//   // reallocated so we cannot ensure pointer stability.
+//   XNNPACK_ABORT_CHECK(
+//       !IsBuilding(),
+//       "Cannot get the address of a buffer in a cache during a building step.");
+//   return offset_to_addr_[offset];
+// }
+
+
+void StreamingWeightCacheProvider::Release() {
+  buffer_address_to_identifier_.clear();
+  cache_key_to_offset_.clear();
+  mmap_handles_.clear();
+  mmap_buffer_base_offset_ = 0;
+  builder_ = WeightCacheBuilder();
+}
+
+
+/******************************** */
+
+size_t StreamingWeightCacheProvider::look_up(
+    void* context, const xnn_weights_cache_look_up_key* cache_key) {
+  return reinterpret_cast<StreamingWeightCacheProvider*>(context)->LookUp(cache_key);
+}
+
+void* StreamingWeightCacheProvider::reserve_space(void* context, size_t n) {
+  return reinterpret_cast<StreamingWeightCacheProvider*>(context)->ReserveSpace(n);
+}
+
+size_t StreamingWeightCacheProvider::look_up_or_insert(
+    void* context, const xnn_weights_cache_look_up_key* cache_key, void* ptr,
+    size_t size) {
+  return reinterpret_cast<StreamingWeightCacheProvider*>(context)->LookUpOrInsert(
+      cache_key, ptr, size);
+}
+
+bool StreamingWeightCacheProvider::is_finalized(void* context) {
+  return reinterpret_cast<StreamingWeightCacheProvider*>(context)->IsActive();
+}
+
+void* StreamingWeightCacheProvider::offset_to_addr(void* context, size_t offset) {
+  return reinterpret_cast<StreamingWeightCacheProvider*>(context)->OffsetToAddr(
+      offset);
+}
+
+enum xnn_status StreamingWeightCacheProvider::delete_cache(void* context) {
+  reinterpret_cast<StreamingWeightCacheProvider*>(context)->Release();
+  return xnn_status_success;
+}
+
+PackIdentifier StreamingWeightCacheProvider::BuildPackIdentifier(
+    const xnn_weights_cache_look_up_key& key) {
+  const auto get_buffer_id = [&](const void* buffer) -> size_t {
+    if (buffer) {
+      const auto identifier_it = buffer_address_to_identifier_.find(buffer);
+      if (identifier_it != buffer_address_to_identifier_.end()) {
+        return identifier_it->second;
+      }
+      // We could have several layers of remapping. We look through
+      // buffer_remaps_ until we find a valid identifier or nothing is mapped to
+      // the current buffer pointer.
+      auto remapped_it = buffer_remaps_.find(buffer);
+      while (remapped_it != buffer_remaps_.end()) {
+        const auto remapped_identifier_it =
+            buffer_address_to_identifier_.find(remapped_it->second);
+        if (remapped_identifier_it != buffer_address_to_identifier_.end()) {
+          return remapped_identifier_it->second;
+        }
+        remapped_it = buffer_remaps_.find(remapped_it->second);
+      }
+      XNNPACK_ABORT_CHECK(
+          remapped_it != buffer_remaps_.end(),
+          "Unknown constant buffer passed to BuildPackIdentifier.");
+    }
+    return PackIdentifier::kNoId;
+  };
+  return PackIdentifier{/*pack_algorithm_id=*/key.seed,
+                        /*weights_id=*/get_buffer_id(key.kernel),
+                        /*bias_id=*/get_buffer_id(key.bias)};
 }
 
 

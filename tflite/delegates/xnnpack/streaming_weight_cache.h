@@ -21,6 +21,7 @@ limitations under the License.
 #include <map>
 #include <memory>
 #include <string>
+#include <vector>
 #include <unordered_map>
 
 #include "xnnpack.h"  // from @XNNPACK
@@ -114,6 +115,13 @@ class StreamingWeightCacheProvider {
   [[nodiscard]]
   size_t LookUp(const xnn_weights_cache_look_up_key* cache_key);
 
+  // Lookup by explicit identifiers (pack algorithm id, weights id, optional bias id).
+  // This bypasses pointer->identifier mapping and directly queries the loaded
+  // cache_key_to_offset_ map. Returns SIZE_MAX if not found.
+  [[nodiscard]]
+  size_t LookUpByIds(size_t pack_algorithm_id, size_t weights_id,
+                     size_t bias_id = PackIdentifier::kNoId);
+
   // Reserves space for a buffer of given size and returns a pointer to it.
   //
   // The buffer data should be filled and `LookUpOrInsert` should be immediately
@@ -137,6 +145,30 @@ class StreamingWeightCacheProvider {
   // WARNING: This requires the buffer to be finalized.
   // WARNING: This does not check the validity of the passed offset.
   void* OffsetToAddr(size_t offset);
+
+  // Returns the address that was recorded from the mmap mapping for the given
+  // offset (i.e. the address stored in `offset_to_addr_`). This is useful to
+  // compare the original mmap() address vs the actual address used at runtime
+  // (which may be a managed buffer override). Returns nullptr if no mmaped
+  // address is recorded for `offset`.
+  void* GetMmappedAddr(size_t offset);
+
+  // Returns a snapshot of the loaded cache key mappings. Each element is a
+  // pair of PackIdentifier and BufferLocation reflecting what was loaded from
+  // the on-disk FlatBuffer. This allows tools to inspect the exact
+  // identifier→offset mappings without parsing the human-readable dump.
+ std::unordered_multimap<PackIdentifier, BufferLocation, PackIdentifier::Hash> GetCacheKeyToOffset() const{
+    return cache_key_to_offset_;
+  }
+
+  
+  // Returns a copy of the internal buffer address -> identifier map.
+  // Use this to take a stable snapshot for diagnostics or validation tools.
+  std::unordered_map<const void*, uint64_t> GetBufferAddressToIdentifier() const {
+    return buffer_address_to_identifier_;
+  }
+
+  
 
   // Releases the weight cache's memory.
   void Release();
@@ -266,13 +298,13 @@ class StreamingWeightCacheProvider {
 };
 
 
-class ChunkManagementModule{
-    //TODO: Chunk management logic 
+// class ChunkManagementModule{
+//     //TODO: Chunk management logic 
 
-};
-class MemoryPrefetchModule{
-    // Prefetching logic for memory managem
-};
+// };
+// class MemoryPrefetchModule{
+//     // Prefetching logic for memory managem
+// };
 
 }  // namespace xnnpack
 }  // namespace tflite
