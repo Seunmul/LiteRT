@@ -611,7 +611,7 @@ std::string StreamingWeightCacheProvider::DumpWeightCacheStructure() const {
   oss << "  Cache type: " << (IsInMemoryCachePath(file_path_) ? "IN-MEMORY (special)" : "FILE-BACKED") << "\n";
   oss << std::left << std::setfill(' ')  // fill을 공백으로 명시적 설정
       << std::setw(6) << "Index"
-      << " | " << std::setw(12) << "Buffer ID"  
+      << " | " << std::setw(12) << "Weight ID"  
       << " | " << std::setw(12) << "Pack Algo ID"
       << " | " << std::setw(12) << "Bias ID"
       << " | " << std::setw(10) << "Offset"
@@ -639,8 +639,8 @@ std::string StreamingWeightCacheProvider::DumpWeightCacheStructure() const {
     
     oss << std::left << std::setfill(' ')  // fill을 공백으로 명시적 설정
         << std::setw(6) << i
-        << " | " << std::setw(12) << buffer->packing_algorithm_id()
         << " | " << std::setw(12) << buffer->weights_id()
+        << " | " << std::setw(12) << buffer->packing_algorithm_id()
         << " | " << std::setw(12) << bias_str
         << " | " << std::setw(10) << buffer->offset()
         << " | " << std::setw(10) << buffer->size()
@@ -660,7 +660,7 @@ std::string StreamingWeightCacheProvider::DumpWeightCacheStructure() const {
   if (!cache_key_to_offset_.empty()) {
     oss << "Cache Key Mappingss :\n";
     oss << std::left << std::setfill(' ')  
-    << std::setw(12) << "Buffer ID"
+    << std::setw(12) << "Weight ID"
     << " | " << std::setw(12) << "Pack Algo ID"
     << " | " << std::setw(12) << "Bias ID"
     << " | " << std::setw(10) << "Offset"
@@ -672,8 +672,8 @@ std::string StreamingWeightCacheProvider::DumpWeightCacheStructure() const {
       std::string bias_str = (pack_id.bias_id == PackIdentifier::kNoId) ? "None" : std::to_string(pack_id.bias_id);
       
       oss << std::left << std::setfill(' ')  
-          << std::setw(12) << pack_id.pack_algorithm_id
-          << " | " << std::setw(12) << pack_id.weights_id
+          << std::setw(12) << pack_id.weights_id
+          << " | " << std::setw(12) << pack_id.pack_algorithm_id
           << " | " << std::setw(12) << bias_str
           << " | " << std::setw(10) << location.offset
           << " | " << std::setw(10) << location.size << "\n";
