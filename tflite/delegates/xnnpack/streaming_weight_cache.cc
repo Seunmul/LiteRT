@@ -127,7 +127,6 @@ StreamingWeightCacheProvider& StreamingWeightCacheProvider::operator=(
   XNN_MOVE_MEMBER(buffer_remaps_);
   XNN_MOVE_MEMBER(cache_key_to_offset_);
   XNN_MOVE_MEMBER(mmap_handles_);
-  XNN_MOVE_MEMBER(file_content_buffer_);
   XNN_MOVE_MEMBER(mmap_buffer_base_offset_);
   XNN_MOVE_MEMBER(file_descriptor_);
   XNN_MOVE_MEMBER(builder_);
@@ -149,7 +148,8 @@ void StreamingWeightCacheProvider::SetFilePath(const char* path) {
     file_path_ = safe_path;
   }
 }
-#include <limits.h>
+
+
 bool StreamingWeightCacheProvider::LoadOrStartBuild(const char* path,
                                                FileDescriptor fd) {
                                             
@@ -159,8 +159,11 @@ bool StreamingWeightCacheProvider::LoadOrStartBuild(const char* path,
                     "path or a file descriptor.");
     return false;
   }
+
   const char* const safe_path = Sanitize(path);
+
   FileDescriptor build_fd = fd.Duplicate();
+
   if (!IsInMemoryCachePath(safe_path) && Load(safe_path, std::move(fd))) {
     TFLITE_LOG_PROD_ONCE(tflite::TFLITE_LOG_INFO,
                     "XNNPack weight cache loaded from '%s'.", safe_path);
@@ -192,7 +195,8 @@ bool StreamingWeightCacheProvider::StartBuild(const char* path, FileDescriptor f
   return building_run_;
 }
 
-bool StreamingWeightCacheProvider::Load(const std::string& path, FileDescriptor fd) {
+bool StreamingWeightCacheProvider::Load(const std::string& path, 
+                                        FileDescriptor fd) {
   SetFilePath(path.c_str());
   file_descriptor_ = std::move(fd);
   return Load();
@@ -295,71 +299,6 @@ bool StreamingWeightCacheProvider::Load() {
   return true;
 }
 
-bool StreamingWeightCacheProvider::LoadLastBuildStep() {
-  if (mmap_handles_.empty()) {
-    return Load();
-  }
-
-  if (builder_.LastBuildStepSize() == 0) {
-    return true;
-  }
-
-  const XNNPackCacheHeader header = [this] {
-    XNNPackCacheHeader header;
-    memcpy(&header, mmap_handles_.front().data(), sizeof(header));
-    return header;
-  }();
-
-  // Map last data segment:
-  // - either resize the last mmap handle;
-  // - or add a new mapping handle.
-  {
-    MMapHandle& last_mmap_handle = mmap_handles_.back();
-    const int last_mmap_size = last_mmap_handle.size();
-    if (!last_mmap_handle.Resize(last_mmap_size +
-                                 builder_.LastBuildStepSize())) {
-      mmap_handles_.emplace_back();
-      if (file_descriptor_.IsValid()) {
-        XNNPACK_RETURN_CHECK(
-            mmap_handles_.back().Map(file_descriptor_,
-                                     /*offset=*/builder_.LastBuildStepStart()),
-            "could not map last build step");
-      } else {
-        XNNPACK_RETURN_CHECK(
-            mmap_handles_.back().Map(file_path_.c_str(),
-                                     /*offset=*/builder_.LastBuildStepStart()),
-            "could not map last build step");
-      }
-    }
-  }
-  // Read the updated buffer list.
-  MMapHandle& segment_mmap_handle = mmap_handles_.back();
-  const size_t buffer_list_offset =
-      header.buffer_list_offset - segment_mmap_handle.offset();
-
-  flatbuffers::Verifier verifier(
-      segment_mmap_handle.data() + buffer_list_offset, header.buffer_list_size);
-  XNNPACK_RETURN_CHECK(cache::schema::VerifyBufferListBuffer(verifier),
-                       "buffer list validation failed.");
-
-  const cache::schema::BufferList* buffer_list = cache::schema::GetBufferList(
-      segment_mmap_handle.data() + buffer_list_offset);
-  XNNPACK_RETURN_CHECK(buffer_list,
-                       "could not get packed weights from flatbuffer.");
-
-  // Update offset_to_addr_ with new offsets
-  const ptrdiff_t offset_modifier =
-      buffer_list->base_offset() - segment_mmap_handle.offset();
-  for (const auto* buffer : *(buffer_list->buffers())) {
-    const size_t offset = buffer->offset();
-    if (!offset_to_addr_.count(offset)) {
-      offset_to_addr_.insert(
-          {offset, segment_mmap_handle.data() + offset + offset_modifier});
-    }
-  }
-  return true;
-}
-
 bool StreamingWeightCacheProvider::StartBuildStep() {
   XNNPACK_RETURN_CHECK(CanStartBuildStep(),
                        "cannot append data to an existing cache file.");
@@ -385,14 +324,15 @@ bool StreamingWeightCacheProvider::StopBuildStep() {
   return LoadLastBuildStep();
 }
 
-void StreamingWeightCacheProvider::MapTensorIdentifiers(
-    const TfLiteTensor* tensors, const size_t size,
-    const std::unordered_map<size_t, size_t>& tensor_index_to_identifier) {
+void StreamingWeightCacheProvider::MapTensorIdentifiers(const TfLiteTensor* tensors, 
+    const size_t size, const std::unordered_map<size_t, size_t>& tensor_index_to_identifier) {
+
   for (const auto [index, identifier] : tensor_index_to_identifier) {
     XNNPACK_ABORT_CHECK(index < size,
                         "Tensor index corresponds to a non existing tensor.");
     buffer_address_to_identifier_[tensors[index].data.data] = identifier;
   }
+
 }
 
 void StreamingWeightCacheProvider::RemapDataBuffer(const void* const buffer,
@@ -400,21 +340,37 @@ void StreamingWeightCacheProvider::RemapDataBuffer(const void* const buffer,
   buffer_remaps_[new_buffer] = buffer;
 }
 
-size_t StreamingWeightCacheProvider::LookUp(
-    const xnn_weights_cache_look_up_key* cache_key) {
+size_t StreamingWeightCacheProvider::LookUp(const xnn_weights_cache_look_up_key* cache_key) {
+
   if (!cache_key) {
     TFLITE_LOG_PROD(tflite::TFLITE_LOG_ERROR,
                     "XNNPack weight cache: a null cache key was provided.");
     return SIZE_MAX;
   }
+
   const PackIdentifier pack_id = BuildPackIdentifier(*cache_key);
+
   if (auto offset_it = cache_key_to_offset_.find(pack_id);
       offset_it != cache_key_to_offset_.end()) {
     return offset_it->second.offset;
   }
+
   return SIZE_MAX;
 }
 
+size_t StreamingWeightCacheProvider::LookUpByIds(size_t pack_algorithm_id,
+                                                 size_t weights_id,
+                                                 size_t bias_id) {
+  PackIdentifier pid{ /*pack_algorithm_id=*/pack_algorithm_id,
+                      /*weights_id=*/weights_id,
+                      /*bias_id=*/bias_id };
+
+  if (auto it = cache_key_to_offset_.find(pid); it != cache_key_to_offset_.end()) {
+    return it->second.offset;
+  }
+
+  return SIZE_MAX;
+}
 
 void* StreamingWeightCacheProvider::ReserveSpace(size_t size) {
   XNNPACK_ABORT_CHECK(IsBuilding(),
@@ -450,11 +406,12 @@ void* StreamingWeightCacheProvider::OffsetToAddr(const size_t offset) {
     XNNPACK_ABORT_CHECK(
         !IsBuilding(),
         "Cannot get the address of a buffer in a cache during a building step.");
-    // if (managed_buffer_[active_buffer_index_]) {
+     
+    // weight streaming path   
+    if (managed_buffer_[active_buffer_index_]) {
         auto it = offset_to_size_.find(offset);
         size_t buf_size = it->second;
         // printf("OffsetToAddr: offset=%zu, size=%zu\n", offset, buf_size);
-        // VerifyBuffer(offset);
 
         const size_t sector_size = 4096;
         size_t abs_offset = mmap_buffer_base_offset_ + offset;
@@ -462,58 +419,17 @@ void* StreamingWeightCacheProvider::OffsetToAddr(const size_t offset) {
         size_t offset_adjust = abs_offset - aligned_offset;
         size_t aligned_size = ((buf_size + offset_adjust + sector_size - 1) / sector_size) * sector_size;
         
-        // Open single file descriptor for parallel threads
-        int fd = open(file_path_.c_str(), O_RDONLY | O_DIRECT);
-        if (fd < 0) {
-            perror("Failed to open file for parallel read");
-            return offset_to_addr_.at(offset);
-        }
         
-        // Configurable thread count (default: 4, can be set via environment variable)
-        size_t num_threads = 8;  // Default value
+       // Single-threaded pread
+        uint8_t* target_ptr = static_cast<uint8_t*>(managed_buffer_[active_buffer_index_]);
+        ssize_t bytes_read = pread(direct_io_file_descriptor_.Value(), target_ptr, aligned_size, aligned_offset);
+        
+        if (bytes_read < 0 || static_cast<size_t>(bytes_read) != aligned_size) {
+            printf("Single-threaded pread failed: read=%zd (expected %zu)\n", bytes_read, aligned_size);
+        }
 
-        // Ensure we don't create more threads than necessary
-        const size_t min_chunk_size = 64 * 1024;  // 64KB minimum per thread
-        if (aligned_size < min_chunk_size * num_threads) {
-            num_threads = std::max(1UL, aligned_size / min_chunk_size);
-        }
-        
-        // Calculate chunk size for each thread
-        size_t chunk_size = aligned_size / num_threads;
-        size_t remainder = aligned_size % num_threads;
-        
-        // Create tasks for parallel reading
-        std::vector<std::future<std::pair<ssize_t, size_t>>> read_tasks;
-        read_tasks.reserve(num_threads);
-        
-        for (size_t i = 0; i < num_threads; ++i) {
-            size_t current_chunk_size = chunk_size + (i < remainder ? 1 : 0);
-            size_t chunk_offset = i * chunk_size + std::min(i, remainder);
-            
-            read_tasks.emplace_back(std::async(std::launch::async, [&, i, chunk_offset, current_chunk_size]() -> std::pair<ssize_t, size_t> {
-                uint8_t* target_ptr = static_cast<uint8_t*>(managed_buffer_[active_buffer_index_]) + chunk_offset;
-                ssize_t bytes_read = pread(fd, target_ptr, current_chunk_size, aligned_offset + chunk_offset);
-                return {bytes_read, current_chunk_size};
-            }));
-        }
-        
-        // Wait for all threads to complete and check results
-        bool all_success = true;
-        for (size_t i = 0; i < num_threads; ++i) {
-            auto [bytes_read, expected_size] = read_tasks[i].get();
-            if (bytes_read < 0 || static_cast<size_t>(bytes_read) != expected_size) {
-                printf("Thread %zu pread failed: read=%zd (expected %zu)\n", i, bytes_read, expected_size);
-                all_success = false;
-            }
-        }
-        
-        close(fd);
-        
-        if (!all_success) {
-            printf("Parallel pread failed with %zu threads for %zu bytes\n", num_threads, aligned_size);
-        }
+
         // Optional debug output
-        // printf("Read %zu bytes using %zu threads\n", aligned_size, num_threads);
         
         // uint8_t* actual_data = static_cast<uint8_t*>(managed_buffer_[active_buffer_index_]) + offset_adjust;
         
@@ -524,128 +440,42 @@ void* StreamingWeightCacheProvider::OffsetToAddr(const size_t offset) {
         // }
         
         return (void *)(static_cast<uint8_t*>(managed_buffer_[active_buffer_index_]) + offset_adjust);
-        // return offset_to_addr_.at(offset);
+    }
+    else { // general path
+        return offset_to_addr_.at(offset);
+    }
+}
 
-    // }
-    // return offset_to_addr_.at(offset);
+void StreamingWeightCacheProvider::Release() {
+  buffer_address_to_identifier_.clear();
+  cache_key_to_offset_.clear();
+  mmap_handles_.clear();
+  mmap_buffer_base_offset_ = 0;
+  builder_ = WeightCacheBuilder();
 }
 
 
-bool StreamingWeightCacheProvider::VerifyAllBuffers() {
-    bool all_match = true;
-    for (const auto& [offset, _] : offset_to_addr_) {
-        if (!VerifyBuffer(offset)) {
-            all_match = false;
-        }
-    }
-    return all_match;
-}
-
-bool StreamingWeightCacheProvider::VerifyBuffer(size_t offset) {
-    auto size_it = offset_to_size_.find(offset);
-    if (size_it == offset_to_size_.end()) {
-        fprintf(stdout, "[VerifyBuffer] No size found for offset=%zu\n", offset);
-        return false;
-    }
-    size_t buf_size = size_it->second;
-
-    // mmap 기반 원본 데이터
-    const uint8_t* mmap_ptr = reinterpret_cast<const uint8_t*>(
-        offset_to_addr_.at(offset));
-
-    // pread 기반 streaming 데이터 with O_DIRECT alignment
-    size_t abs_offset = mmap_buffer_base_offset_ + offset;
-    
-    // O_DIRECT requires sector alignment (usually 512 bytes)
-    const size_t sector_size = 4096;
-    size_t aligned_offset = (abs_offset / sector_size) * sector_size;
-    size_t offset_adjust = abs_offset - aligned_offset;
-    size_t aligned_size = ((buf_size + offset_adjust + sector_size - 1) / sector_size) * sector_size;
-    
-    // Allocate aligned buffer
-    void* aligned_buffer = nullptr;
-    if (posix_memalign(&aligned_buffer, sector_size, aligned_size) != 0) {
-        perror("[VerifyBuffer] posix_memalign failed");
-        return false;
-    }
-    
-    int fd = open(file_path_.c_str(), O_RDONLY | O_DIRECT);
-    if (fd < 0) {
-        perror("[VerifyBuffer] open failed");
-        free(aligned_buffer);
-        return false;
-    }
-    
-    ssize_t n = pread(fd, aligned_buffer, aligned_size, aligned_offset);
-    close(fd);
-    
-    if (n < 0 || static_cast<size_t>(n) != aligned_size) {
-        perror("[VerifyBuffer] pread failed");
-        free(aligned_buffer);
-        return false;
-    }
-    
-    // Extract the actual data from aligned buffer
-    uint8_t* actual_data = static_cast<uint8_t*>(aligned_buffer) + offset_adjust;
-
-    // 비교
-    if (memcmp(mmap_ptr, actual_data, buf_size) == 0) {
-        printf("[VerifyBuffer] offset=%zu size=%zu : MATCH ✅\n", offset, buf_size);
-        //show first/last few bytes
-        printf("First few bytes(mmap_ptr):\n");
-        for (size_t i = 0; i < std::min<size_t>(20, buf_size); i++) {
-            printf("0x%02x ", mmap_ptr[i]);
-        }
-        printf("\n");
-        printf("First few bytes(pread):\n");
-        for (size_t i = 0; i < std::min<size_t>(20, buf_size); i++) {
-            printf("0x%02x ", actual_data[i]);
-        }
-        printf("\n");
-        printf("Last few bytes(mmap_ptr):\n");
-        for (size_t i = buf_size-1; i > buf_size - 20; i--) {
-            printf("0x%02x ", mmap_ptr[i]);
-        }
-        printf("\n");
-        printf("Last few bytes(pread):\n");
-        for (size_t i = buf_size-1; i > buf_size - 20; i--) {
-            printf("0x%02x ", actual_data[i]);
-        }
-        printf("\n");
-
-        free(aligned_buffer);
+// Open a file descriptor for direct I/O operations, with external file path
+bool StreamingWeightCacheProvider::OpenDirectIOFileDescriptor(std::string file_path) {
+    if (direct_io_file_descriptor_.IsValid()) {
+        // Already opened
         return true;
-    } else {
-        printf("[VerifyBuffer] offset=%zu size=%zu : MISMATCH ❌\n", offset, buf_size);
-        // optional: dump first few mismatched bytes
-        for (size_t i = 0; i < std::min<size_t>(64, buf_size); i++) {
-            if (mmap_ptr[i] != actual_data[i]) {
-                printf("  mismatch at byte %zu: mmap=0x%02x pread=0x%02x\n",
-                       i, mmap_ptr[i], actual_data[i]);
-                break;
-            }
-        }
-        free(aligned_buffer);
-        return false;
     }
+
+    direct_io_file_descriptor_ = FileDescriptor::Open(file_path.c_str(), O_RDONLY | O_DIRECT);
+    XNNPACK_RETURN_CHECK(direct_io_file_descriptor_.IsValid(), "could not open file ('%s') for direct I/O: %s.",
+                         file_path.c_str(), strerror(errno));
+    return true;
 }
 
-/******************************** */
-
-size_t StreamingWeightCacheProvider::LookUpByIds(size_t pack_algorithm_id,
-                                                 size_t weights_id,
-                                                 size_t bias_id) {
-  PackIdentifier pid{ /*pack_algorithm_id=*/pack_algorithm_id,
-                      /*weights_id=*/weights_id,
-                      /*bias_id=*/bias_id };
-  if (auto it = cache_key_to_offset_.find(pid); it != cache_key_to_offset_.end()) {
-    return it->second.offset;
-  }
-  return SIZE_MAX;
+bool StreamingWeightCacheProvider::CloseDirectIOFileDescriptor() {
+    if (direct_io_file_descriptor_.IsValid()) {
+        direct_io_file_descriptor_.Close();
+    }
+    return true;
 }
 
-
-void StreamingWeightCacheProvider::InitManagedBuffer(size_t size) {
+void StreamingWeightCacheProvider::AllocManagedBuffer(size_t size) {
   managed_size_ = size;
 
   // 보통 4096 정렬 (파일시스템 블록 사이즈 기준)
@@ -664,30 +494,30 @@ void StreamingWeightCacheProvider::InitManagedBuffer(size_t size) {
   }
 }
 
+void StreamingWeightCacheProvider::FreeManagedBuffer() {
+  for (int i = 0; i < 2; ++i) {
+    if (managed_buffer_[i]) {
+      free(managed_buffer_[i]);
+      managed_buffer_[i] = nullptr;
+    }
+  }
+  managed_size_ = 0;
+}
+
+void StreamingWeightCacheProvider::SwitchActiveBuffer() {
+  active_buffer_index_ = 1 - active_buffer_index_;
+}
+
+void StreamingWeightCacheProvider::ResetActiveBuffer() {
+  active_buffer_index_ = 0;
+}
+
+/********* Utilities *********/
 
 void* StreamingWeightCacheProvider::GetMmappedAddr(size_t offset) {
   auto it = offset_to_addr_.find(offset);
   if (it != offset_to_addr_.end()) return it->second;
   return nullptr;
-}
-
-
-std::string StreamingWeightCacheProvider::GetWeightCacheStats() const {
-  std::ostringstream oss;
-  
-  if (mmap_handles_.empty()) {
-    oss << "Cache not loaded.";
-    return oss.str();
-  }
-  
-  const MMapHandle& mmap_handle = mmap_handles_.front();
-  
-  oss << "Cache Stats: "
-      << "File size: " << mmap_handle.size() << " bytes, "
-      << "Cached buffers: " << cache_key_to_offset_.size() << ", "
-      << "Memory mappings: " << mmap_handles_.size();
-  
-  return oss.str();
 }
 
 bool StreamingWeightCacheProvider::DumpWeightCacheStructureToFile(const std::string& dump_file_path) const {
@@ -899,61 +729,115 @@ std::string StreamingWeightCacheProvider::DumpTensorIdentifierMap() const {
   return oss.str();
 }
 
+bool StreamingWeightCacheProvider::VerifyBuffer(size_t offset) {
+    auto size_it = offset_to_size_.find(offset);
+    if (size_it == offset_to_size_.end()) {
+        fprintf(stdout, "[VerifyBuffer] No size found for offset=%zu\n", offset);
+        return false;
+    }
+    size_t buf_size = size_it->second;
+
+    // mmap 기반 원본 데이터
+    const uint8_t* mmap_ptr = reinterpret_cast<const uint8_t*>(
+        offset_to_addr_.at(offset));
+
+    // pread 기반 streaming 데이터 with O_DIRECT alignment
+    size_t abs_offset = mmap_buffer_base_offset_ + offset;
+    
+    // O_DIRECT requires sector alignment (usually 512 bytes)
+    const size_t sector_size = 4096;
+    size_t aligned_offset = (abs_offset / sector_size) * sector_size;
+    size_t offset_adjust = abs_offset - aligned_offset;
+    size_t aligned_size = ((buf_size + offset_adjust + sector_size - 1) / sector_size) * sector_size;
+    
+    // Allocate aligned buffer
+    void* aligned_buffer = nullptr;
+    if (posix_memalign(&aligned_buffer, sector_size, aligned_size) != 0) {
+        perror("[VerifyBuffer] posix_memalign failed");
+        return false;
+    }
+    
+    int fd = open(file_path_.c_str(), O_RDONLY | O_DIRECT);
+    if (fd < 0) {
+        perror("[VerifyBuffer] open failed");
+        free(aligned_buffer);
+        return false;
+    }
+    
+    ssize_t n = pread(fd, aligned_buffer, aligned_size, aligned_offset);
+    close(fd);
+    
+    if (n < 0 || static_cast<size_t>(n) != aligned_size) {
+        perror("[VerifyBuffer] pread failed");
+        free(aligned_buffer);
+        return false;
+    }
+    
+    // Extract the actual data from aligned buffer
+    uint8_t* actual_data = static_cast<uint8_t*>(aligned_buffer) + offset_adjust;
+
+    // 비교
+    if (memcmp(mmap_ptr, actual_data, buf_size) == 0) {
+        printf("[VerifyBuffer] offset=%zu size=%zu : MATCH ✅\n", offset, buf_size);
+        //show first/last few bytes
+        printf("First few bytes(mmap_ptr):\n");
+        for (size_t i = 0; i < std::min<size_t>(20, buf_size); i++) {
+            printf("0x%02x ", mmap_ptr[i]);
+        }
+        printf("\n");
+        printf("First few bytes(pread):\n");
+        for (size_t i = 0; i < std::min<size_t>(20, buf_size); i++) {
+            printf("0x%02x ", actual_data[i]);
+        }
+        printf("\n");
+        printf("Last few bytes(mmap_ptr):\n");
+        for (size_t i = buf_size-1; i > buf_size - 20; i--) {
+            printf("0x%02x ", mmap_ptr[i]);
+        }
+        printf("\n");
+        printf("Last few bytes(pread):\n");
+        for (size_t i = buf_size-1; i > buf_size - 20; i--) {
+            printf("0x%02x ", actual_data[i]);
+        }
+        printf("\n");
+
+        free(aligned_buffer);
+        return true;
+    } else {
+        printf("[VerifyBuffer] offset=%zu size=%zu : MISMATCH ❌\n", offset, buf_size);
+        // optional: dump first few mismatched bytes
+        for (size_t i = 0; i < std::min<size_t>(64, buf_size); i++) {
+            if (mmap_ptr[i] != actual_data[i]) {
+                printf("  mismatch at byte %zu: mmap=0x%02x pread=0x%02x\n",
+                       i, mmap_ptr[i], actual_data[i]);
+                break;
+            }
+        }
+        free(aligned_buffer);
+        return false;
+    }
+}
+
+bool StreamingWeightCacheProvider::VerifyAllBuffers() {
+    bool all_match = true;
+    for (const auto& [offset, _] : offset_to_addr_) {
+        if (!VerifyBuffer(offset)) {
+            all_match = false;
+        }
+    }
+    return all_match;
+}
 
 void StreamingWeightCacheProvider::PrefetchFromFile(const std::string& filename) {
-    // O_DIRECT → alignment 문제 있을 수 있으니 처음엔 O_RDONLY 권장
-    int fd = open(filename.c_str(), O_RDONLY );
-    if (fd < 0) {
-        perror("open failed");
-        return;
-    }
 
-    // 파일 크기 구하기
-    off_t file_size = lseek(fd, 0, SEEK_END);
-    if (file_size < 0) {
-        perror("lseek failed");
-        close(fd);
-        return;
-    }
-    lseek(fd, 0, SEEK_SET);
-
-    if (managed_size_ < static_cast<size_t>(file_size)) {
-        fprintf(stderr, "Managed buffer too small (need %zu, have %zu)\n",
-                static_cast<size_t>(file_size), managed_size_);
-        close(fd);
-        return;
-    }
-
-    // 파일 전체 preload
-    size_t total = 0;
-    while (total < static_cast<size_t>(file_size)) {
-        ssize_t n = read(fd,
-                         static_cast<uint8_t*>(managed_buffer_[active_buffer_index_]) + total,
-                         file_size - total);
-        if (n <= 0) {
-            if (n < 0) perror("read failed");
-            break;
-        }
-        total += n;
-    }
-    close(fd);
-
-    printf("Read %zu/%zu bytes into managed buffer (full file preload)\n",
-           total, static_cast<size_t>(file_size));
 }
 
 
+/**************
+ * Privates
+ **************/
 
-void StreamingWeightCacheProvider::Release() {
-  buffer_address_to_identifier_.clear();
-  cache_key_to_offset_.clear();
-  mmap_handles_.clear();
-  mmap_buffer_base_offset_ = 0;
-  builder_ = WeightCacheBuilder();
-}
-
-
-/******************************** */
+/************ C Interfaces ************/
 
 size_t StreamingWeightCacheProvider::look_up(
     void* context, const xnn_weights_cache_look_up_key* cache_key) {
@@ -984,6 +868,75 @@ enum xnn_status StreamingWeightCacheProvider::delete_cache(void* context) {
   reinterpret_cast<StreamingWeightCacheProvider*>(context)->Release();
   return xnn_status_success;
 }
+
+
+/************ Internal Methods ************/
+
+bool StreamingWeightCacheProvider::LoadLastBuildStep() {
+  if (mmap_handles_.empty()) {
+    return Load();
+  }
+
+  if (builder_.LastBuildStepSize() == 0) {
+    return true;
+  }
+
+  const XNNPackCacheHeader header = [this] {
+    XNNPackCacheHeader header;
+    memcpy(&header, mmap_handles_.front().data(), sizeof(header));
+    return header;
+  }();
+
+  // Map last data segment:
+  // - either resize the last mmap handle;
+  // - or add a new mapping handle.
+  {
+    MMapHandle& last_mmap_handle = mmap_handles_.back();
+    const int last_mmap_size = last_mmap_handle.size();
+    if (!last_mmap_handle.Resize(last_mmap_size +
+                                 builder_.LastBuildStepSize())) {
+      mmap_handles_.emplace_back();
+      if (file_descriptor_.IsValid()) {
+        XNNPACK_RETURN_CHECK(
+            mmap_handles_.back().Map(file_descriptor_,
+                                     /*offset=*/builder_.LastBuildStepStart()),
+            "could not map last build step");
+      } else {
+        XNNPACK_RETURN_CHECK(
+            mmap_handles_.back().Map(file_path_.c_str(),
+                                     /*offset=*/builder_.LastBuildStepStart()),
+            "could not map last build step");
+      }
+    }
+  }
+  // Read the updated buffer list.
+  MMapHandle& segment_mmap_handle = mmap_handles_.back();
+  const size_t buffer_list_offset =
+      header.buffer_list_offset - segment_mmap_handle.offset();
+
+  flatbuffers::Verifier verifier(
+      segment_mmap_handle.data() + buffer_list_offset, header.buffer_list_size);
+  XNNPACK_RETURN_CHECK(cache::schema::VerifyBufferListBuffer(verifier),
+                       "buffer list validation failed.");
+
+  const cache::schema::BufferList* buffer_list = cache::schema::GetBufferList(
+      segment_mmap_handle.data() + buffer_list_offset);
+  XNNPACK_RETURN_CHECK(buffer_list,
+                       "could not get packed weights from flatbuffer.");
+
+  // Update offset_to_addr_ with new offsets
+  const ptrdiff_t offset_modifier =
+      buffer_list->base_offset() - segment_mmap_handle.offset();
+  for (const auto* buffer : *(buffer_list->buffers())) {
+    const size_t offset = buffer->offset();
+    if (!offset_to_addr_.count(offset)) {
+      offset_to_addr_.insert(
+          {offset, segment_mmap_handle.data() + offset + offset_modifier});
+    }
+  }
+  return true;
+}
+
 
 PackIdentifier StreamingWeightCacheProvider::BuildPackIdentifier(
     const xnn_weights_cache_look_up_key& key) {

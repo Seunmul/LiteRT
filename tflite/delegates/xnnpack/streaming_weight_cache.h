@@ -103,8 +103,6 @@ class StreamingWeightCacheProvider {
       const TfLiteTensor* tensors, size_t size,
       const std::unordered_map<size_t, size_t>& tensor_index_to_identifier);
 
-  bool DumpTensorIdentifierMapToFile(const std::string& dump_file_path) const ;
-  std::string DumpTensorIdentifierMap() const;
   // In case a constant buffer data needs to be moved for some reason, this will
   // map the new buffer data to its identifier.
   void RemapDataBuffer(const void* buffer, const void* new_buffer);
@@ -146,28 +144,6 @@ class StreamingWeightCacheProvider {
   // WARNING: This does not check the validity of the passed offset.
   void* OffsetToAddr(size_t offset);
 
-  // Returns the address that was recorded from the mmap mapping for the given
-  // offset (i.e. the address stored in `offset_to_addr_`). This is useful to
-  // compare the original mmap() address vs the actual address used at runtime
-  // (which may be a managed buffer override). Returns nullptr if no mmaped
-  // address is recorded for `offset`.
-  void* GetMmappedAddr(size_t offset);
-
-  // Returns a snapshot of the loaded cache key mappings. Each element is a
-  // pair of PackIdentifier and BufferLocation reflecting what was loaded from
-  // the on-disk FlatBuffer. This allows tools to inspect the exact
-  // identifier→offset mappings without parsing the human-readable dump.
- std::unordered_multimap<PackIdentifier, BufferLocation, PackIdentifier::Hash> GetCacheKeyToOffset() const{
-    return cache_key_to_offset_;
-  }
-
-  
-  // Returns a copy of the internal buffer address -> identifier map.
-  // Use this to take a stable snapshot for diagnostics or validation tools.
-  std::unordered_map<const void*, uint64_t> GetBufferAddressToIdentifier() const {
-    return buffer_address_to_identifier_;
-  }
-
   
 
   // Releases the weight cache's memory.
@@ -187,23 +163,61 @@ class StreamingWeightCacheProvider {
 
   // Returns the cache provider expected by XNNPack.
   xnn_weights_cache_provider& GetCacheProvider() { return cache_provider_; }
+  
+  bool OpenDirectIOFileDescriptor(std::string file_path);
+  bool CloseDirectIOFileDescriptor();
 
-  // 캐시 구조를 사람이 읽을 수 있는 형태로 덤프
+  // Initializes the double managed buffer with the given size.
+  void AllocManagedBuffer(size_t size);
+  
+  void FreeManagedBuffer();
+  
+  void SwitchActiveBuffer();
+
+  void ResetActiveBuffer();
+
+  // Multithreaded pread function
+  bool ParallelPread(void* buffer, size_t size, size_t offset, size_t num_threads = 8);
+
+  /********* Utilities *********/
+
+  // Returns the address that was recorded from the mmap mapping for the given
+  // offset (i.e. the address stored in `offset_to_addr_`). This is useful to
+  // compare the original mmap() address vs the actual address used at runtime
+  // (which may be a managed buffer override). Returns nullptr if no mmaped
+  // address is recorded for `offset`.
+  void* GetMmappedAddr(size_t offset);
+
+  // Returns a snapshot of the loaded cache key mappings. Each element is a
+  // pair of PackIdentifier and BufferLocation reflecting what was loaded from
+  // the on-disk FlatBuffer. This allows tools to inspect the exact
+  // identifier→offset mappings without parsing the human-readable dump.
+  std::unordered_multimap<PackIdentifier, BufferLocation, PackIdentifier::Hash> GetCacheKeyToOffset() const {
+    return cache_key_to_offset_;
+  }
+
+  // Returns a copy of the internal buffer address -> identifier map.
+  // Use this to take a stable snapshot for diagnostics or validation tools.
+  std::unordered_map<const void*, uint64_t> GetBufferAddressToIdentifier() const {
+    return buffer_address_to_identifier_;
+  }
+
+  
+  std::string DumpTensorIdentifierMap() const;
+  
+  bool DumpTensorIdentifierMapToFile(const std::string& dump_file_path) const;
+  
   std::string DumpWeightCacheStructure() const;
   
-  // 덤프 결과를 파일로 저장
   bool DumpWeightCacheStructureToFile(const std::string& dump_file_path) const;
-  
-  // 간단한 통계 정보 반환
-  std::string GetWeightCacheStats() const;
-
-  void InitManagedBuffer(size_t size);
-
-  void PrefetchFromFile(const std::string& filename);
   
   bool VerifyBuffer(size_t offset);
 
   bool VerifyAllBuffers();
+
+  void PrefetchFromFile(const std::string& filename);
+
+  /************ C Interfaces ************/
 
   // C interface: `xnn_weights_cache_provider` callback.
   static size_t look_up(void* context,
@@ -258,13 +272,12 @@ class StreamingWeightCacheProvider {
 
   // MMap handles to the file that contains the cache.
   std::vector<MMapHandle> mmap_handles_;
-  // Buffer that holds file content when not using mmap.
-  std::vector<char> file_content_buffer_;
   // The base offset in the file where the weight data is stored.
   size_t mmap_buffer_base_offset_ = 0;
   // File descriptor for the cache file.
   FileDescriptor file_descriptor_;
-
+  // File descriptor for direct I/O operations.
+  FileDescriptor direct_io_file_descriptor_;
   // Used to build the cache.
   WeightCacheBuilder builder_;
 
@@ -285,31 +298,15 @@ class StreamingWeightCacheProvider {
   // cache file.
   std::map<size_t, void*> offset_to_addr_;
 
-
+  // Stores the size of each buffer stored at the given offset in the cache file.
   std::map<size_t, size_t> offset_to_size_;
+
   //! READY FOR IMPLEMENT DOUBLE BUFFERING -> We need to modify this function to return the address from the active buffer
   void* managed_buffer_[2] = {nullptr, nullptr};
   size_t managed_size_ = 0;
   int active_buffer_index_ = 0;
-
-  struct BufferEntry {
-    void* buffers[2];   // double buffer 실제 주소
-    int active;         // 현재 active 버퍼 인덱스
-    size_t size;        // 버퍼 크기
-  };
-  
-  std::unordered_map<size_t, BufferEntry> offset_to_entry_;
  
 };
-
-
-// class ChunkManagementModule{
-//     //TODO: Chunk management logic 
-
-// };
-// class MemoryPrefetchModule{
-//     // Prefetching logic for memory managem
-// };
 
 }  // namespace xnnpack
 }  // namespace tflite
