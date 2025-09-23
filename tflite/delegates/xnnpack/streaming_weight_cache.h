@@ -200,7 +200,10 @@ class StreamingWeightCacheProvider {
   void InitManagedBuffer(size_t size);
 
   void PrefetchFromFile(const std::string& filename);
+  
+  bool VerifyBuffer(size_t offset);
 
+  bool VerifyAllBuffers();
 
   // C interface: `xnn_weights_cache_provider` callback.
   static size_t look_up(void* context,
@@ -253,13 +256,13 @@ class StreamingWeightCacheProvider {
   std::unordered_multimap<PackIdentifier, BufferLocation, PackIdentifier::Hash>
       cache_key_to_offset_;
 
-  // MMap allocation handler.
+  // MMap handles to the file that contains the cache.
   std::vector<MMapHandle> mmap_handles_;
-
-  // The offset to the first buffer data in the MMap allocation.
-  size_t mmap_buffer_base_offset_;
-
-  // Holds a file descriptor to the cache file.
+  // Buffer that holds file content when not using mmap.
+  std::vector<char> file_content_buffer_;
+  // The base offset in the file where the weight data is stored.
+  size_t mmap_buffer_base_offset_ = 0;
+  // File descriptor for the cache file.
   FileDescriptor file_descriptor_;
 
   // Used to build the cache.
@@ -282,6 +285,8 @@ class StreamingWeightCacheProvider {
   // cache file.
   std::map<size_t, void*> offset_to_addr_;
 
+
+  std::map<size_t, size_t> offset_to_size_;
   //! READY FOR IMPLEMENT DOUBLE BUFFERING -> We need to modify this function to return the address from the active buffer
   void* managed_buffer_[2] = {nullptr, nullptr};
   size_t managed_size_ = 0;
