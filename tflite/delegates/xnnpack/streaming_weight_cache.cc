@@ -411,26 +411,28 @@ void* StreamingWeightCacheProvider::OffsetToAddr(const size_t offset) {
     if (managed_buffer_[active_buffer_index_]) {
         auto it = offset_to_size_.find(offset);
         size_t buf_size = it->second;
-        // printf("OffsetToAddr: offset=%zu, size=%zu\n", offset, buf_size);
 
         const size_t sector_size = 4096;
         size_t abs_offset = mmap_buffer_base_offset_ + offset;
         size_t aligned_offset = (abs_offset / sector_size) * sector_size;
         size_t offset_adjust = abs_offset - aligned_offset;
         size_t aligned_size = ((buf_size + offset_adjust + sector_size - 1) / sector_size) * sector_size;
-        
-        
-       // Single-threaded pread
-        uint8_t* target_ptr = static_cast<uint8_t*>(managed_buffer_[active_buffer_index_]);
-        ssize_t bytes_read = pread(direct_io_file_descriptor_.Value(), target_ptr, aligned_size, aligned_offset);
-        
-        if (bytes_read < 0 || static_cast<size_t>(bytes_read) != aligned_size) {
-            printf("Single-threaded pread failed: read=%zd (expected %zu)\n", bytes_read, aligned_size);
-        }
 
-
+        static size_t _chunk_index = 0;
+        
+        weight_chunk_info_t weight_chunk;
+        weight_chunk.chunk_index = _chunk_index++;
+        weight_chunk.aligned_size = aligned_size;
+        weight_chunk.aligned_offset = aligned_offset;
+        weight_chunk.buffer_index = active_buffer_index_;
+        offset_to_weight_chunk_info_.insert({offset, weight_chunk});
+        
         // Optional debug output
+
+        // printf("OffsetToAddr: chunk_index=%zu, offset=%zu, aligned_offset=%zu, aligned_size=%zu, buffer_index=%d\n",
+        //     _chunk_index, offset, aligned_offset, aligned_size, active_buffer_index_);
         
+
         // uint8_t* actual_data = static_cast<uint8_t*>(managed_buffer_[active_buffer_index_]) + offset_adjust;
         
         // if(memcmp(offset_to_addr_.at(offset), actual_data, buf_size) != 0) {
@@ -438,12 +440,41 @@ void* StreamingWeightCacheProvider::OffsetToAddr(const size_t offset) {
         // } else {
         //     printf("Data match after pread for offset=%zu size=%zu\n", offset, buf_size);
         // }
-        
-        return (void *)(static_cast<uint8_t*>(managed_buffer_[active_buffer_index_]) + offset_adjust);
+
+        void * ret_addr = static_cast<uint8_t*>(managed_buffer_[active_buffer_index_]) + offset_adjust;
+        // active_buffer_index_ = 1 - active_buffer_index_; // switch buffer for next call
+        return ret_addr;
     }
     else { // general path
         return offset_to_addr_.at(offset);
     }
+}
+
+void StreamingWeightCacheProvider::PreInvokeHook(const size_t offset){
+
+    if (managed_buffer_[active_buffer_index_]) {
+        
+        auto it = offset_to_weight_chunk_info_.find(offset);
+        size_t aligned_size = it->second.aligned_size;
+        size_t aligned_offset = it->second.aligned_offset;
+        int active_buffer_index = it->second.buffer_index;
+
+        // printf("PreInvokeHook: chunk_index=%zu, aligned_offset=%zu, aligned_size=%zu, buffer_index=%d\n",
+        //     it->second.chunk_index, aligned_offset, aligned_size, it->second.buffer_index);
+
+        // Single-threaded pread
+        uint8_t* target_ptr = static_cast<uint8_t*>(managed_buffer_[active_buffer_index]);
+        ssize_t bytes_read = pread(direct_io_file_descriptor_.Value(), target_ptr, aligned_size, aligned_offset);
+        
+        if (bytes_read < 0 || static_cast<size_t>(bytes_read) != aligned_size) {
+            printf("Single-threaded pread failed: read=%zd (expected %zu)\n", bytes_read, aligned_size);
+        }
+    }
+            
+}
+
+void StreamingWeightCacheProvider::PostInvokeHook(const size_t offset){
+    
 }
 
 void StreamingWeightCacheProvider::Release() {
@@ -476,7 +507,7 @@ bool StreamingWeightCacheProvider::CloseDirectIOFileDescriptor() {
 }
 
 void StreamingWeightCacheProvider::AllocManagedBuffer(size_t size) {
-  managed_size_ = size;
+  managed_buffer_size_ = size;
 
   // 보통 4096 정렬 (파일시스템 블록 사이즈 기준)
   const size_t sector_size = 4096;
@@ -486,7 +517,7 @@ void StreamingWeightCacheProvider::AllocManagedBuffer(size_t size) {
     if (posix_memalign(&managed_buffer_[i], sector_size, aligned_size) != 0) {
       perror("posix_memalign failed");
       managed_buffer_[i] = nullptr;
-      managed_size_ = 0;
+      managed_buffer_size_ = 0;
       return;
     }
     // Zero-fill
@@ -501,7 +532,7 @@ void StreamingWeightCacheProvider::FreeManagedBuffer() {
       managed_buffer_[i] = nullptr;
     }
   }
-  managed_size_ = 0;
+  managed_buffer_size_ = 0;
 }
 
 void StreamingWeightCacheProvider::SwitchActiveBuffer() {
@@ -869,6 +900,13 @@ enum xnn_status StreamingWeightCacheProvider::delete_cache(void* context) {
   return xnn_status_success;
 }
 
+void StreamingWeightCacheProvider::pre_invoke_hook(void* context, size_t offset) {
+  reinterpret_cast<StreamingWeightCacheProvider*>(context)->PreInvokeHook(offset);
+}
+
+void StreamingWeightCacheProvider::post_invoke_hook(void* context, size_t offset) {
+  reinterpret_cast<StreamingWeightCacheProvider*>(context)->PostInvokeHook(offset);
+}
 
 /************ Internal Methods ************/
 

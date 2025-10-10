@@ -35,6 +35,7 @@ limitations under the License.
 namespace tflite {
 namespace xnnpack {
 
+
 // Allows XNNPack to directly load packed weights from disk instead of having to
 // repack them every time.
 //
@@ -146,6 +147,9 @@ class StreamingWeightCacheProvider {
 
   
 
+  void PreInvokeHook(const size_t offset);
+  void PostInvokeHook(const size_t offset);
+
   // Releases the weight cache's memory.
   void Release();
 
@@ -240,6 +244,12 @@ class StreamingWeightCacheProvider {
   // C interface: `xnn_weights_cache_provider` callback.
   static enum xnn_status delete_cache(void* context);
 
+  // C interface: `xnn_weights_cache_provider` callback.
+  static void pre_invoke_hook(void* context, size_t offset);
+
+  // C interface: `xnn_weights_cache_provider` callback.
+  static void post_invoke_hook(void* context, size_t offset);
+
  private:
   // Hashes a cache key to lookup in `cache_key_to_identifier_`.
   PackIdentifier BuildPackIdentifier(const xnn_weights_cache_look_up_key& key);
@@ -256,7 +266,12 @@ class StreamingWeightCacheProvider {
       /*look_up_or_insert=*/StreamingWeightCacheProvider::look_up_or_insert,
       /*is_finalized=*/StreamingWeightCacheProvider::is_finalized,
       /*offset_to_addr=*/StreamingWeightCacheProvider::offset_to_addr,
-      /*delete_cache=*/StreamingWeightCacheProvider::delete_cache};
+      /*delete_cache=*/StreamingWeightCacheProvider::delete_cache,
+#ifdef USE_WEIGHT_STREAMING
+      /*pre_invoke_hook=*/StreamingWeightCacheProvider::pre_invoke_hook,
+      /*post_invoke_hook=*/StreamingWeightCacheProvider::post_invoke_hook,
+#endif
+    };
 
   // Path to the cache file.
   std::string file_path_;
@@ -303,9 +318,54 @@ class StreamingWeightCacheProvider {
 
   //! READY FOR IMPLEMENT DOUBLE BUFFERING -> We need to modify this function to return the address from the active buffer
   void* managed_buffer_[2] = {nullptr, nullptr};
-  size_t managed_size_ = 0;
+  size_t managed_buffer_size_ = 0;
   int active_buffer_index_ = 0;
+
+  struct weight_chunk_info_t {
+    size_t chunk_index;
+    size_t aligned_size;
+    size_t aligned_offset;
+    int buffer_index; // which managed buffer was used to load this chunk
+  };
+  std::unordered_map<size_t, weight_chunk_info_t> offset_to_weight_chunk_info_;
  
+};
+
+
+
+class WeightChunkPrefetcher{
+public:
+  WeightChunkPrefetcher() = default;
+
+  ~WeightChunkPrefetcher() {
+   
+  }
+
+  enum class PrefetchState {
+    IDLE,
+    PREFETCHING,
+    COMPLETED
+  };
+
+  enum class PrefetchMode {
+    PREFILL,
+    DECODE,
+    UNINITIALIZED,
+  };
+
+  void Init(StreamingWeightCacheProvider* weight_cache_provider, size_t chunk_size);
+  void LoadPrefetchList(PrefetchMode mode);
+  void CreatePrefetchList();
+  void UpdatePrefetcherMode(PrefetchMode mode) { prefetch_mode_ = mode; }
+  // Prefetches the weight chunk for the given buffer index.
+  void PrefetchNextChunk(int current_buffer_index);
+
+
+private:
+  std::unordered_map<int, std::vector<uint8_t>> buffer_chunks_;
+  PrefetchMode prefetch_mode_ = PrefetchMode::UNINITIALIZED;
+  
+
 };
 
 }  // namespace xnnpack
