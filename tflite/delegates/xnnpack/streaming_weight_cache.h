@@ -35,6 +35,10 @@ limitations under the License.
 namespace tflite {
 namespace xnnpack {
 
+// Forward declaration
+class WeightChunkPrefetcher;
+class StreamingWeightCacheProvider;
+
 
 // Allows XNNPack to directly load packed weights from disk instead of having to
 // repack them every time.
@@ -56,6 +60,9 @@ class StreamingWeightCacheProvider {
   StreamingWeightCacheProvider& operator=(const StreamingWeightCacheProvider&) = delete;
   StreamingWeightCacheProvider(StreamingWeightCacheProvider&&);
   StreamingWeightCacheProvider& operator=(StreamingWeightCacheProvider&&);
+
+  // WeightChunkPrefetcher가 private 멤버에 접근할 수 있도록 friend 선언
+  friend class WeightChunkPrefetcher;
 
   // Changes the file path to save the cache to.
   //
@@ -145,9 +152,8 @@ class StreamingWeightCacheProvider {
   // WARNING: This does not check the validity of the passed offset.
   void* OffsetToAddr(size_t offset);
 
-  
-
   void PreInvokeHook(const size_t offset);
+
   void PostInvokeHook(const size_t offset);
 
   // Releases the weight cache's memory.
@@ -180,9 +186,13 @@ class StreamingWeightCacheProvider {
 
   void ResetActiveBuffer();
 
-  // Multithreaded pread function
-  bool ParallelPread(void* buffer, size_t size, size_t offset, size_t num_threads = 8);
 
+  // WeightChunkPrefetcher Helpers
+  void InitWeightChunkPrefetcher();
+
+  WeightChunkPrefetcher* GetWeightChunkPrefetcher(){
+    return weight_chunk_prefetcher_.get();
+  }
   /********* Utilities *********/
 
   // Returns the address that was recorded from the mmap mapping for the given
@@ -218,8 +228,6 @@ class StreamingWeightCacheProvider {
   bool VerifyBuffer(size_t offset);
 
   bool VerifyAllBuffers();
-
-  void PrefetchFromFile(const std::string& filename);
 
   /************ C Interfaces ************/
 
@@ -316,6 +324,9 @@ class StreamingWeightCacheProvider {
   // Stores the size of each buffer stored at the given offset in the cache file.
   std::map<size_t, size_t> offset_to_size_;
 
+  // Stores the weights id corresponding to the given offset in the cache file.
+  std::map<size_t, int> offset_to_weights_id_;
+
   //! READY FOR IMPLEMENT DOUBLE BUFFERING -> We need to modify this function to return the address from the active buffer
   void* managed_buffer_[2] = {nullptr, nullptr};
   size_t managed_buffer_size_ = 0;
@@ -325,21 +336,21 @@ class StreamingWeightCacheProvider {
     size_t chunk_index;
     size_t aligned_size;
     size_t aligned_offset;
+    size_t origin_offset;
+    size_t weights_id;
     int buffer_index; // which managed buffer was used to load this chunk
   };
   std::unordered_map<size_t, weight_chunk_info_t> offset_to_weight_chunk_info_;
- 
+  
+  // Prefetcher 인스턴스
+  std::unique_ptr<WeightChunkPrefetcher> weight_chunk_prefetcher_;
+
 };
-
-
 
 class WeightChunkPrefetcher{
 public:
   WeightChunkPrefetcher() = default;
-
-  ~WeightChunkPrefetcher() {
-   
-  }
+  ~WeightChunkPrefetcher() = default;
 
   enum class PrefetchState {
     IDLE,
@@ -353,20 +364,23 @@ public:
     UNINITIALIZED,
   };
 
-  void Init(StreamingWeightCacheProvider* weight_cache_provider, size_t chunk_size);
-  void LoadPrefetchList(PrefetchMode mode);
-  void CreatePrefetchList();
+  // 초기화 (chunk_size 제거)
+  void Init(StreamingWeightCacheProvider* weight_cache_provider);
+  
+  
+  // 실제 I/O 수행 함수
+  bool LoadWeightChunk(size_t offset);
+  
+  // 모드 관리
   void UpdatePrefetcherMode(PrefetchMode mode) { prefetch_mode_ = mode; }
-  // Prefetches the weight chunk for the given buffer index.
-  void PrefetchNextChunk(int current_buffer_index);
-
 
 private:
-  std::unordered_map<int, std::vector<uint8_t>> buffer_chunks_;
+  StreamingWeightCacheProvider* weight_cache_provider_ = nullptr;
   PrefetchMode prefetch_mode_ = PrefetchMode::UNINITIALIZED;
   
-
 };
+
+
 
 }  // namespace xnnpack
 }  // namespace tflite

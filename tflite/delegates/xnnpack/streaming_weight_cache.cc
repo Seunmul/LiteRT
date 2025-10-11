@@ -283,7 +283,9 @@ bool StreamingWeightCacheProvider::Load() {
            mmap_handle.data() + mmap_buffer_base_offset_ + buffer->offset()});
       offset_to_size_.insert(
           {buffer->offset(), buffer->size()});
-
+      offset_to_weights_id_.insert(
+            {buffer->offset(), buffer->weights_id()});
+    
         //   TFLITE_LOG_PROD(tflite::TFLITE_LOG_INFO,
         //     "Loaded buffer: pack_algorithm_id=%zu, weights_id=%zu, bias_id=%zu, offset=%zu, size=%zu",
         //          buffer->packing_algorithm_id(),
@@ -297,6 +299,16 @@ bool StreamingWeightCacheProvider::Load() {
   unmap_on_fail.Deactivate();
 
   return true;
+}
+
+void StreamingWeightCacheProvider::InitWeightChunkPrefetcher() {
+  if (!weight_chunk_prefetcher_) {
+    weight_chunk_prefetcher_ = std::make_unique<WeightChunkPrefetcher>();
+    weight_chunk_prefetcher_->Init(this);
+    
+    TFLITE_LOG_PROD(tflite::TFLITE_LOG_INFO,
+                    "XNNPack weight cache prefetcher initialized");
+  }
 }
 
 bool StreamingWeightCacheProvider::StartBuildStep() {
@@ -421,17 +433,18 @@ void* StreamingWeightCacheProvider::OffsetToAddr(const size_t offset) {
         static size_t _chunk_index = 0;
         
         weight_chunk_info_t weight_chunk;
-        weight_chunk.chunk_index = _chunk_index++;
+        weight_chunk.chunk_index = _chunk_index;
         weight_chunk.aligned_size = aligned_size;
         weight_chunk.aligned_offset = aligned_offset;
         weight_chunk.buffer_index = active_buffer_index_;
+        //optional
+        weight_chunk.origin_offset = offset;
+        weight_chunk.weights_id = offset_to_weights_id_.at(offset);
         offset_to_weight_chunk_info_.insert({offset, weight_chunk});
-        
         // Optional debug output
 
-        // printf("OffsetToAddr: chunk_index=%zu, offset=%zu, aligned_offset=%zu, aligned_size=%zu, buffer_index=%d\n",
-        //     _chunk_index, offset, aligned_offset, aligned_size, active_buffer_index_);
-        
+        // printf("OffsetToAddr: chunk_index=%zu, aligned_offset=%zu, aligned_size=%zu, offset_adjust=%zu, buffer_index=%d, origin_offset=%zu, weights_id=%zu\n",
+        //     weight_chunk.chunk_index, weight_chunk.aligned_offset, weight_chunk.aligned_size, offset_adjust, weight_chunk.buffer_index, weight_chunk.origin_offset, weight_chunk.weights_id);
 
         // uint8_t* actual_data = static_cast<uint8_t*>(managed_buffer_[active_buffer_index_]) + offset_adjust;
         
@@ -442,6 +455,7 @@ void* StreamingWeightCacheProvider::OffsetToAddr(const size_t offset) {
         // }
 
         void * ret_addr = static_cast<uint8_t*>(managed_buffer_[active_buffer_index_]) + offset_adjust;
+        _chunk_index++;
         // active_buffer_index_ = 1 - active_buffer_index_; // switch buffer for next call
         return ret_addr;
     }
@@ -450,18 +464,28 @@ void* StreamingWeightCacheProvider::OffsetToAddr(const size_t offset) {
     }
 }
 
+
 void StreamingWeightCacheProvider::PreInvokeHook(const size_t offset){
+
 
     if (managed_buffer_[active_buffer_index_]) {
         
+        // Prefetcher가 있으면 이벤트 기반으로 처리
+        if (weight_chunk_prefetcher_) {
+            weight_chunk_prefetcher_->LoadWeightChunk(offset);
+            return;
+        }
+     
+        // 기존 fallback 로직
+        /*
         auto it = offset_to_weight_chunk_info_.find(offset);
         size_t aligned_size = it->second.aligned_size;
         size_t aligned_offset = it->second.aligned_offset;
         int active_buffer_index = it->second.buffer_index;
-
+        
         // printf("PreInvokeHook: chunk_index=%zu, aligned_offset=%zu, aligned_size=%zu, buffer_index=%d\n",
         //     it->second.chunk_index, aligned_offset, aligned_size, it->second.buffer_index);
-
+        
         // Single-threaded pread
         uint8_t* target_ptr = static_cast<uint8_t*>(managed_buffer_[active_buffer_index]);
         ssize_t bytes_read = pread(direct_io_file_descriptor_.Value(), target_ptr, aligned_size, aligned_offset);
@@ -469,8 +493,8 @@ void StreamingWeightCacheProvider::PreInvokeHook(const size_t offset){
         if (bytes_read < 0 || static_cast<size_t>(bytes_read) != aligned_size) {
             printf("Single-threaded pread failed: read=%zd (expected %zu)\n", bytes_read, aligned_size);
         }
+          */   
     }
-            
 }
 
 void StreamingWeightCacheProvider::PostInvokeHook(const size_t offset){
@@ -859,10 +883,6 @@ bool StreamingWeightCacheProvider::VerifyAllBuffers() {
     return all_match;
 }
 
-void StreamingWeightCacheProvider::PrefetchFromFile(const std::string& filename) {
-
-}
-
 
 /**************
  * Privates
@@ -1007,5 +1027,38 @@ PackIdentifier StreamingWeightCacheProvider::BuildPackIdentifier(
                         /*bias_id=*/get_buffer_id(key.bias)};
 }
 
+/************ WeightChunkPrefetcher 구현 ************/
+
+void WeightChunkPrefetcher::Init(StreamingWeightCacheProvider* provider) {
+  weight_cache_provider_ = provider;
+  prefetch_mode_ = PrefetchMode::UNINITIALIZED; // 기본값
+}
+
+bool WeightChunkPrefetcher::LoadWeightChunk(size_t offset) {
+  
+  // weight_cache_provider_에서 필요한 정보 가져오기
+  auto chunk_info_it = weight_cache_provider_->offset_to_weight_chunk_info_.find(offset);
+  if (chunk_info_it == weight_cache_provider_->offset_to_weight_chunk_info_.end()) {
+    return false;
+  }
+  
+  const auto& chunk_info = chunk_info_it->second;
+
+  printf("PreInvokeHook: chunk_index=%zu, aligned_offset=%zu, aligned_size=%zu, buffer_index=%d, origin_offset=%zu, weights_id=%zu\n",
+      chunk_info.chunk_index, chunk_info.aligned_offset, chunk_info.aligned_size, chunk_info.buffer_index, chunk_info.origin_offset, chunk_info.weights_id);
+
+  // 실제 I/O 수행
+  uint8_t* target_ptr = static_cast<uint8_t*>(
+    weight_cache_provider_->managed_buffer_[chunk_info.buffer_index]);
+  
+  ssize_t bytes_read = pread(
+    weight_cache_provider_->direct_io_file_descriptor_.Value(),
+    target_ptr,
+    chunk_info.aligned_size,
+    chunk_info.aligned_offset
+  );
+  
+  return bytes_read > 0 && static_cast<size_t>(bytes_read) == chunk_info.aligned_size;
+}
 
 }  // namespace tflite::xnnpack
