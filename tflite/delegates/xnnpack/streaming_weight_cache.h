@@ -38,7 +38,7 @@ namespace xnnpack {
 // Forward declaration
 class WeightChunkPrefetcher;
 class StreamingWeightCacheProvider;
-
+class WeightChunkInfoHandler;
 
 // Allows XNNPack to directly load packed weights from disk instead of having to
 // repack them every time.
@@ -61,8 +61,27 @@ class StreamingWeightCacheProvider {
   StreamingWeightCacheProvider(StreamingWeightCacheProvider&&);
   StreamingWeightCacheProvider& operator=(StreamingWeightCacheProvider&&);
 
+  struct weight_chunk_info_t {
+    size_t chunk_index;
+    size_t aligned_offset;
+    size_t offset_adjust; //abs_offset(mmap_buffer_base_offset_ + offset) - aligned_offset
+    size_t aligned_size;
+    size_t origin_offset;
+    size_t origin_size;
+    int managed_buffer_index; // which managed buffer was used to load this chunk
+    size_t weights_id;
+  };
+
+  enum class ProviderMode {
+    PRE_RUNTIME,  // record pre-runtime I/O prefetch plan
+    RUNTIME,      // runtime streaming mode (default)
+    DEBUG_MMAP    // mmap only for debugging
+  };
+
+  
   // WeightChunkPrefetcher가 private 멤버에 접근할 수 있도록 friend 선언
   friend class WeightChunkPrefetcher;
+  friend class WeightChunkInfoHandler;
 
   // Changes the file path to save the cache to.
   //
@@ -193,6 +212,12 @@ class StreamingWeightCacheProvider {
   WeightChunkPrefetcher* GetWeightChunkPrefetcher(){
     return weight_chunk_prefetcher_.get();
   }
+
+  // WeightChunkInfoHandler Helpers
+  void SetWeightChunkInfoHandler(WeightChunkInfoHandler* handler) {
+        chunk_info_handler_ = handler;
+  }
+
   /********* Utilities *********/
 
   // Returns the address that was recorded from the mmap mapping for the given
@@ -228,6 +253,11 @@ class StreamingWeightCacheProvider {
   bool VerifyBuffer(size_t offset);
 
   bool VerifyAllBuffers();
+
+
+  void SetProviderMode(ProviderMode mode) { mode_ = mode; }
+  ProviderMode GetProviderMode() const { return mode_; }
+
 
   /************ C Interfaces ************/
 
@@ -331,20 +361,19 @@ class StreamingWeightCacheProvider {
   void* managed_buffer_[2] = {nullptr, nullptr};
   size_t managed_buffer_size_ = 0;
   int active_buffer_index_ = 0;
+  const size_t managed_buffer_sector_size_ = 4096; // direct I/O를 위한 섹터 크기
 
-  struct weight_chunk_info_t {
-    size_t chunk_index;
-    size_t aligned_size;
-    size_t aligned_offset;
-    size_t origin_offset;
-    size_t weights_id;
-    int buffer_index; // which managed buffer was used to load this chunk
-  };
+  
   std::unordered_map<size_t, weight_chunk_info_t> offset_to_weight_chunk_info_;
+  
   
   // Prefetcher 인스턴스
   std::unique_ptr<WeightChunkPrefetcher> weight_chunk_prefetcher_;
+  
+  ProviderMode mode_ = ProviderMode::RUNTIME; // default: streaming at runtime
 
+  // WeightChunkInfoHandler Pointer (Dependency Injection)
+  WeightChunkInfoHandler* chunk_info_handler_ = nullptr;  
 };
 
 class WeightChunkPrefetcher{
@@ -373,13 +402,21 @@ public:
   
   // 모드 관리
   void UpdatePrefetcherMode(PrefetchMode mode) { prefetch_mode_ = mode; }
-
+    PrefetchMode GetPrefetcherMode() const { return prefetch_mode_; }
 private:
   StreamingWeightCacheProvider* weight_cache_provider_ = nullptr;
   PrefetchMode prefetch_mode_ = PrefetchMode::UNINITIALIZED;
   
 };
 
+class WeightChunkInfoHandler {
+public:
+    virtual ~WeightChunkInfoHandler() = default;
+    virtual void WriteChunkInfo(const StreamingWeightCacheProvider::weight_chunk_info_t& chunk_info,
+                                WeightChunkPrefetcher::PrefetchMode prefetch_mode) = 0;
+
+    virtual void Finalize() = 0;  // 파일 닫기 등
+};
 
 
 }  // namespace xnnpack
