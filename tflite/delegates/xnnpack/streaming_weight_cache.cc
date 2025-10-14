@@ -526,8 +526,8 @@ void StreamingWeightCacheProvider::PreInvokeHook(const size_t offset){
         
         const auto& chunk_info = chunk_info_it->second;
  
-        if (chunk_info_handler_) {
-            chunk_info_handler_->WriteChunkInfo(chunk_info, weight_chunk_prefetcher_->GetPrefetcherMode());
+        if (chunk_info_writer) {
+            chunk_info_writer->WriteChunkInfo(chunk_info, weight_chunk_prefetcher_->GetPrefetcherMode());
         }
     }
     return; 

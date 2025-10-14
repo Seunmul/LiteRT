@@ -36,9 +36,10 @@ namespace tflite {
 namespace xnnpack {
 
 // Forward declaration
-class WeightChunkPrefetcher;
 class StreamingWeightCacheProvider;
-class WeightChunkInfoHandler;
+class WeightChunkPrefetcher;
+class WeightChunkInfoWriter;
+class PrefetchPlanLoader;
 
 // Allows XNNPack to directly load packed weights from disk instead of having to
 // repack them every time.
@@ -81,7 +82,7 @@ class StreamingWeightCacheProvider {
   
   // WeightChunkPrefetcher가 private 멤버에 접근할 수 있도록 friend 선언
   friend class WeightChunkPrefetcher;
-  friend class WeightChunkInfoHandler;
+  friend class WeightChunkInfoWriter;
 
   // Changes the file path to save the cache to.
   //
@@ -213,9 +214,18 @@ class StreamingWeightCacheProvider {
     return weight_chunk_prefetcher_.get();
   }
 
-  // WeightChunkInfoHandler Helpers
-  void SetWeightChunkInfoHandler(WeightChunkInfoHandler* handler) {
-        chunk_info_handler_ = handler;
+  // WeightChunkInfoWriter Helpers
+  void SetWeightChunkInfoWriter(WeightChunkInfoWriter* writer) {
+        chunk_info_writer = writer;
+  }
+
+  // PrefetchPlanLoader Helpers
+  void SetPrefetchPlanLoader(PrefetchPlanLoader* loader) {
+        prefetch_plan_loader_ = loader;
+  }
+  
+  PrefetchPlanLoader* GetPrefetchPlanLoader() {
+        return prefetch_plan_loader_;
   }
 
   /********* Utilities *********/
@@ -372,8 +382,11 @@ class StreamingWeightCacheProvider {
   
   ProviderMode mode_ = ProviderMode::RUNTIME; // default: streaming at runtime
 
-  // WeightChunkInfoHandler Pointer (Dependency Injection)
-  WeightChunkInfoHandler* chunk_info_handler_ = nullptr;  
+  // WeightChunkInfoWriter Pointer (Dependency Injection)
+  WeightChunkInfoWriter* chunk_info_writer = nullptr;
+  
+  // PrefetchPlanLoader Pointer (Dependency Injection)
+  PrefetchPlanLoader* prefetch_plan_loader_ = nullptr;
 };
 
 class WeightChunkPrefetcher{
@@ -409,15 +422,23 @@ private:
   
 };
 
-class WeightChunkInfoHandler {
+class WeightChunkInfoWriter {
 public:
-    virtual ~WeightChunkInfoHandler() = default;
+    virtual ~WeightChunkInfoWriter() = default;
     virtual void WriteChunkInfo(const StreamingWeightCacheProvider::weight_chunk_info_t& chunk_info,
                                 WeightChunkPrefetcher::PrefetchMode prefetch_mode) = 0;
-
-    virtual void Finalize() = 0;  // 파일 닫기 등
+    virtual void Finalize() = 0;
 };
 
+class PrefetchPlanLoader {
+public:
+    virtual ~PrefetchPlanLoader() = default;
+
+    // Load prefetch plan from external source (e.g., JSON file)
+    virtual bool LoadFromFile(const std::string& plan_file_path) = 0;
+    
+    
+};
 
 }  // namespace xnnpack
 }  // namespace tflite
