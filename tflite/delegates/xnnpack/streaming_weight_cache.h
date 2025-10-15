@@ -404,7 +404,7 @@ public:
   
   struct PrefetchPlan {
     std::unordered_map<size_t, size_t> offset_to_index; // origin_offset -> index
-    std::vector<StreamingWeightCacheProvider::weight_chunk_info_t> chunks;   // index -> info
+    std::vector<StreamingWeightCacheProvider::weight_chunk_info_t> chunks;   // index -> info //TODO: Will be revmoved
   };
 
   // 모드별 프리패치 플랜 설정(소유권 이전)
@@ -418,6 +418,16 @@ public:
   PrefetchPlan* GetPlan(PrefetchMode mode) = delete;
   
   bool LoadWeightChunk(size_t offset);
+
+  // Build a unified index_to_chunks_ map by traversing all plans' chunks.
+  // Key: chunk_index, Value: weight_chunk_info_t (full chunk metadata)
+  // If the same chunk_index appears with a different metadata across modes,
+  // the first occurrence is kept and a warning is logged (showing origin_offset).
+  void BuildIndexToChunksFromPlans();
+
+  // Accessor for the unified chunk table (index -> full chunk metadata).
+  // Empty / unused indices will have chunk_index == SIZE_MAX.
+  const std::vector<StreamingWeightCacheProvider::weight_chunk_info_t>& GetIndexToChunks() const { return index_to_chunks_; }
   
   void UpdatePrefetcherMode(PrefetchMode mode) { prefetch_mode_ = mode; }
   PrefetchMode GetPrefetcherMode() const { return prefetch_mode_; }
@@ -428,6 +438,12 @@ private:
   PrefetchMode prefetch_mode_ = PrefetchMode::UNINITIALIZED;
   std::array<PrefetchPlan, 2> plans_{}; // [PREFILL=0, DECODE=1]
   std::array<bool, 2> has_plan_{{false, false}};
+
+  // Global shared chunk table across all modes for memory efficiency.
+  // index_to_chunks_[i] contains metadata for chunk_index == i. If an index is
+  // unused the entry's chunk_index will be SIZE_MAX.
+  std::vector<StreamingWeightCacheProvider::weight_chunk_info_t> index_to_chunks_;
+  
   static inline int ModeToIndex(PrefetchMode mode) {
     switch (mode) {
       case PrefetchMode::PREFILL: return 0;
