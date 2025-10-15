@@ -18,6 +18,7 @@ limitations under the License.
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <array>
 #include <map>
 #include <memory>
 #include <string>
@@ -219,14 +220,6 @@ class StreamingWeightCacheProvider {
         chunk_info_writer = writer;
   }
 
-  // PrefetchPlanLoader Helpers
-  void SetPrefetchPlanLoader(PrefetchPlanLoader* loader) {
-        prefetch_plan_loader_ = loader;
-  }
-  
-  PrefetchPlanLoader* GetPrefetchPlanLoader() {
-        return prefetch_plan_loader_;
-  }
 
   /********* Utilities *********/
 
@@ -385,9 +378,10 @@ class StreamingWeightCacheProvider {
   // WeightChunkInfoWriter Pointer (Dependency Injection)
   WeightChunkInfoWriter* chunk_info_writer = nullptr;
   
-  // PrefetchPlanLoader Pointer (Dependency Injection)
-  PrefetchPlanLoader* prefetch_plan_loader_ = nullptr;
 };
+
+//* ============ WeightChunkPrefetcher ============ */
+
 
 class WeightChunkPrefetcher{
 public:
@@ -406,21 +400,45 @@ public:
     UNINITIALIZED,
   };
 
-  // 초기화 (chunk_size 제거)
   void Init(StreamingWeightCacheProvider* weight_cache_provider);
   
+  struct PrefetchPlan {
+    std::unordered_map<size_t, size_t> offset_to_index; // origin_offset -> index
+    std::vector<StreamingWeightCacheProvider::weight_chunk_info_t> chunks;   // index -> info
+  };
+
+  // 모드별 프리패치 플랜 설정(소유권 이전)
+  void SetPrefetchPlan(PrefetchMode mode,
+                       std::unordered_map<size_t, size_t>&& offset_to_index,
+                       std::vector<StreamingWeightCacheProvider::weight_chunk_info_t>&& chunks);
+
+  // 플랜 유무 확인/조회(옵션)
+  bool HasPlan(PrefetchMode mode) const;
+  const PrefetchPlan* GetPlan(PrefetchMode mode) const;
+  PrefetchPlan* GetPlan(PrefetchMode mode) = delete;
   
-  // 실제 I/O 수행 함수
   bool LoadWeightChunk(size_t offset);
   
-  // 모드 관리
   void UpdatePrefetcherMode(PrefetchMode mode) { prefetch_mode_ = mode; }
-    PrefetchMode GetPrefetcherMode() const { return prefetch_mode_; }
+  PrefetchMode GetPrefetcherMode() const { return prefetch_mode_; }
+
+
 private:
   StreamingWeightCacheProvider* weight_cache_provider_ = nullptr;
   PrefetchMode prefetch_mode_ = PrefetchMode::UNINITIALIZED;
+  std::array<PrefetchPlan, 2> plans_{}; // [PREFILL=0, DECODE=1]
+  std::array<bool, 2> has_plan_{{false, false}};
+  static inline int ModeToIndex(PrefetchMode mode) {
+    switch (mode) {
+      case PrefetchMode::PREFILL: return 0;
+      case PrefetchMode::DECODE:  return 1;
+      default: return -1;
+    }
+  }
   
 };
+
+//* ============ WeightChunkInfoWriter ============ */
 
 class WeightChunkInfoWriter {
 public:
@@ -429,6 +447,8 @@ public:
                                 WeightChunkPrefetcher::PrefetchMode prefetch_mode) = 0;
     virtual void Finalize() = 0;
 };
+
+//* ============ PrefetchPlanLoader ============ */
 
 class PrefetchPlanLoader {
 public:
