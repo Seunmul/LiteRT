@@ -387,13 +387,14 @@ class StreamingWeightCacheProvider {
   const size_t managed_buffer_sector_size_ = 4096; // direct I/O를 위한 섹터 크기
 
   std::unordered_map<size_t, weight_chunk_info_t> offset_to_weight_chunk_info_;
+  std::unordered_map<size_t, weight_chunk_info_t> index_to_weight_chunk_info_;
     
   // Prefetcher 인스턴스
   std::unique_ptr<WeightChunkPrefetcher> weight_chunk_prefetcher_;
   
   // Stores the ptr address of the loaded buffer of weights corresponding to the given offset
   // each array element: [0] -> PREFETCHMODE: PREFILL, [1] -> PREFETCHMODE: DECODE
-  std::map<size_t, std::array<void*, 2>> offset_to_weights_ptr_addr_;
+  std::map<size_t, std::array<void*, 2>> offset_to_weights_addr_ptr_;
 
 
   // WeightChunkInfoWriter Pointer (Dependency Injection)
@@ -475,16 +476,15 @@ public:
 
 
 private:
-  StreamingWeightCacheProvider* weight_cache_provider_ = nullptr;
-  PrefetchMode prefetch_mode_ = PrefetchMode::UNINITIALIZED;
-  std::array<PrefetchPlan, 2> plans_{}; // [PREFILL=0, DECODE=1]
-  std::array<bool, 2> has_plan_{{false, false}};
 
-  // Global shared chunk table across all modes for memory efficiency.
-  // index_to_chunks_[i] contains metadata for chunk_index == i. If an index is
-  // unused the entry's chunk_index will be SIZE_MAX.
-  std::vector<StreamingWeightCacheProvider::weight_chunk_info_t> index_to_chunks_;
   
+
+  StreamingWeightCacheProvider* weight_cache_provider_;
+  PrefetchMode prefetch_mode_ = PrefetchMode::UNINITIALIZED;
+  std::array<PrefetchPlan, 2> prefetch_plans_{}; // [PREFILL=0, DECODE=1]
+  bool has_plan_[2] = {false, false};
+  std::vector<StreamingWeightCacheProvider::weight_chunk_info_t>
+      index_to_chunks_;
 };
 
 //* ============ WeightChunkInfoWriter ============ */
