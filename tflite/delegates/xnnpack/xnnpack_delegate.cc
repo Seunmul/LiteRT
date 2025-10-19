@@ -1225,6 +1225,7 @@ class Subgraph {
       }
     }
     TFLITE_LOG_PROD(tflite::TFLITE_LOG_VERBOSE,"SubgraphCreate: creating XNNPACK runtime with flags: %u",flags);
+    
     status = xnn_create_runtime_v4(subgraph.get(), delegate.weights_cache(),
                                    delegate.workspace(), delegate.threadpool(),
                                    flags, &runtime_ptr);
@@ -1272,7 +1273,13 @@ class Subgraph {
           return kTfLiteError;
         }
       }
+
+    //   TFLITE_LOG_PROD(tflite::TFLITE_LOG_INFO,"Subgraph Prepare: Reshaping XNNPACK runtime");
+    // std::cout << "Subgraph Prepare: Reshaping XNNPACK Runtime in Prepare:" << std::endl;
       status = xnn_reshape_runtime(runtime_.get());
+    //   std::cout << "Subgraph Prepare: Reshaping XNNPACK Runtime ends\n" << std::endl;
+    //   TFLITE_LOG_PROD(tflite::TFLITE_LOG_INFO,"Subgraph Prepare: Reshaping XNNPACK runtime end.");
+
       if (status != xnn_status_success) {
         TF_LITE_KERNEL_LOG(context,
                            "XNNPack delegate failed to reshape runtime");
@@ -1423,6 +1430,8 @@ class Subgraph {
       }
     }
 
+    // std::cout << "Subgraph Invoke: setup XNNPACK runtime" << std::endl;
+
     if (any_pointers_changed) {
       std::vector<xnn_external_value> external_values;
       for (std::pair<int, void*> io_info : externals_) {
@@ -1432,7 +1441,7 @@ class Subgraph {
         value.data = io_info.second;
         external_values.push_back(value);
       }
-
+  
       xnn_status status = xnn_status_invalid_state;
       if (enable_subgraph_reshaping) {
         status = xnn_setup_runtime_v2(runtime_.get(), external_values.size(),
@@ -1446,6 +1455,8 @@ class Subgraph {
         return kTfLiteError;
       }
     }
+    // std::cout << "Subgraph Invoke: setup XNNPACK runtime done" << std::endl;
+    // std::cout << "Subgraph Invoke: invoking XNNPACK runtime" << std::endl;
 
     xnn_status status = xnn_invoke_runtime(runtime_.get());
     if (status != xnn_status_success) {
@@ -1460,7 +1471,7 @@ class Subgraph {
                            "failed to get XNNPACK profile information.");
       }
     }
-
+    // std::cout << "Subgraph Invoke: invoking XNNPACK runtime done\n" << std::endl;
     return kTfLiteOk;
   }
 

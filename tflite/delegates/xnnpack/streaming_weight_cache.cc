@@ -456,43 +456,37 @@ void* StreamingWeightCacheProvider::OffsetToAddr(const size_t offset) {
         
         static size_t _chunk_index = 0;
         
+        size_t aligned_offset = (abs_offset / managed_buffer_sector_size_) * managed_buffer_sector_size_;
+        size_t offset_adjust = abs_offset - aligned_offset;
+        size_t aligned_size = ((buf_size + offset_adjust + managed_buffer_sector_size_ - 1) / managed_buffer_sector_size_) * managed_buffer_sector_size_;
+    
+        weight_chunk_info_t weight_chunk;   
+        weight_chunk.chunk_index = _chunk_index;
+        weight_chunk.aligned_size = aligned_size;
+        weight_chunk.aligned_offset = aligned_offset;
+        weight_chunk.origin_offset = offset;
+        weight_chunk.origin_size = buf_size;
+        weight_chunk.offset_adjust = offset_adjust;
+        weight_chunk.managed_buffer_index = active_buffer_index_;
+        weight_chunk.weights_id = offset_to_weights_id_.at(offset);
+        offset_to_weight_chunk_info_.insert({offset, weight_chunk});
 
-        if (offset_to_weight_chunk_info_.find(offset) != offset_to_weight_chunk_info_.end()) {
-            // 이미 로드된 청크인 경우, 해당 버퍼에서 주소 반환
-            weight_chunk_info_t existing_chunk = offset_to_weight_chunk_info_.at(offset);
-            size_t offset_adjust = abs_offset - existing_chunk.aligned_offset;
-            ret_addr = static_cast<uint8_t*>(managed_buffer_[existing_chunk.managed_buffer_index]) + offset_adjust;
-        }else{
-            size_t aligned_offset = (abs_offset / managed_buffer_sector_size_) * managed_buffer_sector_size_;
-            size_t offset_adjust = abs_offset - aligned_offset;
-            size_t aligned_size = ((buf_size + offset_adjust + managed_buffer_sector_size_ - 1) / managed_buffer_sector_size_) * managed_buffer_sector_size_;
+        // printf("OffsetToAddr: chunk_index=%zu, aligned_offset=%zu, aligned_size=%zu, offset_adjust=%zu, buffer_index=%d, origin_offset=%zu, origin_size=%zu, weights_id=%zu\n",
+        //     weight_chunk.chunk_index, weight_chunk.aligned_offset, weight_chunk.aligned_size, offset_adjust,
+        //     weight_chunk.managed_buffer_index, weight_chunk.origin_offset, weight_chunk.origin_size, weight_chunk.weights_id);
         
-            weight_chunk_info_t weight_chunk;   
-            weight_chunk.chunk_index = _chunk_index;
-            weight_chunk.aligned_size = aligned_size;
-            weight_chunk.aligned_offset = aligned_offset;
-            weight_chunk.origin_offset = offset;
-            weight_chunk.origin_size = buf_size;
-            weight_chunk.managed_buffer_index = active_buffer_index_;
-            weight_chunk.weights_id = offset_to_weights_id_.at(offset);
-            offset_to_weight_chunk_info_.insert({offset, weight_chunk});
+        // Optional debug output
+        // uint8_t* actual_data = static_cast<uint8_t*>(managed_buffer_[active_buffer_index_]) + offset_adjust;
+        
+        // if(memcmp(offset_to_addr_.at(offset), actual_data, buf_size) != 0) {
+        //     printf("Data mismatch after pread for offset=%zu size=%zu\n", offset, buf_size);
+        // } else {
+        //     printf("Data match after pread for offset=%zu size=%zu\n", offset, buf_size);
+        // }
 
-            // printf("OffsetToAddr: chunk_index=%zu, aligned_offset=%zu, aligned_size=%zu, offset_adjust=%zu, buffer_index=%d, origin_offset=%zu, origin_size=%zu, weights_id=%zu\n",
-            //     weight_chunk.chunk_index, weight_chunk.aligned_offset, weight_chunk.aligned_size, offset_adjust,
-            //     weight_chunk.managed_buffer_index, weight_chunk.origin_offset, weight_chunk.origin_size, weight_chunk.weights_id);
-                
-            // Optional debug output
-            // uint8_t* actual_data = static_cast<uint8_t*>(managed_buffer_[active_buffer_index_]) + offset_adjust;
-            
-            // if(memcmp(offset_to_addr_.at(offset), actual_data, buf_size) != 0) {
-            //     printf("Data mismatch after pread for offset=%zu size=%zu\n", offset, buf_size);
-            // } else {
-            //     printf("Data match after pread for offset=%zu size=%zu\n", offset, buf_size);
-            // }
+        ret_addr = static_cast<uint8_t*>(managed_buffer_[active_buffer_index_]) + offset_adjust;
+        _chunk_index++;
 
-            ret_addr = static_cast<uint8_t*>(managed_buffer_[active_buffer_index_]) + offset_adjust;
-            _chunk_index++;
-        }
 
         return ret_addr;
 
@@ -543,8 +537,34 @@ void* StreamingWeightCacheProvider::OffsetToAddr(const size_t offset) {
 
 void StreamingWeightCacheProvider::PreInvokeHook(const size_t offset){
 
-    if (GetProviderMode() == ProviderMode::RUNTIME) {      
+    if (GetProviderMode() == ProviderMode::RUNTIME) {
+        int mode_idx = WeightChunkPrefetcher::ModeToIndex(weight_chunk_prefetcher_->GetPrefetcherMode());
+        if (mode_idx < 0) return;
+
+        auto it = offset_to_weights_ptr_addr_.find(offset);
+        if (it == offset_to_weights_ptr_addr_.end()) {
+            TFLITE_LOG_PROD(tflite::TFLITE_LOG_ERROR,
+                "PreInvokeHook: cannot find weights pointer address for offset=%zu", offset);
+            return;
+        }
+        
+        // If we have chunk metadata, update the pointer stored at weights_ptr_addr
+        SwitchActiveBuffer(); // Switch to the other buffer for double buffering
+        auto chunk_it = offset_to_size_.find(offset);
+        size_t buf_size = chunk_it->second;
+        size_t abs_offset = mmap_buffer_base_offset_ + offset;
+        size_t aligned_offset = (abs_offset / managed_buffer_sector_size_) * managed_buffer_sector_size_;
+        size_t offset_adjust = abs_offset - aligned_offset;
+        size_t aligned_size = ((buf_size + offset_adjust + managed_buffer_sector_size_ - 1) / managed_buffer_sector_size_) * managed_buffer_sector_size_;
+        void *ret_addr = static_cast<uint8_t*>(managed_buffer_[active_buffer_index_]) + offset_adjust;
+        
+        void* addr = it->second[mode_idx];
+        if (addr) {*(static_cast<void**>(addr)) = ret_addr;}
+
+        // printf("PreInvokeHook: offset=%zu, weights_ptr_addr=%p, weights_ptr=%p buffer_index=%d \n", offset, addr, *(void**)addr, active_buffer_index_);
+        
         weight_chunk_prefetcher_->LoadWeightChunk(offset);
+
     }
     else if(GetProviderMode() == ProviderMode::PRE_RUNTIME) {
         // mmap을 사용하는 경우, prefetch plan 작성 중
@@ -565,6 +585,21 @@ void StreamingWeightCacheProvider::PreInvokeHook(const size_t offset){
 
 void StreamingWeightCacheProvider::PostInvokeHook(const size_t offset){
     
+}
+
+void StreamingWeightCacheProvider::TraceWeightsAddr(void *addr, const size_t offset){
+    if (!addr) {
+        printf("TraceWeightsAddr: nullptr\n");
+        return;
+    }
+
+    int mode_idx = WeightChunkPrefetcher::ModeToIndex(weight_chunk_prefetcher_->GetPrefetcherMode());
+    if (mode_idx < 0) return;
+
+    offset_to_weights_ptr_addr_[offset][mode_idx] = addr;
+
+    // printf("TraceWeightsAddr: offset=%zu, addr=%p,  Value at addr: %p, PrefetchMode: %s\n", offset, addr, *(void**)addr, weight_chunk_prefetcher_->GetPrefetcherModeString().c_str());
+
 }
 
 void StreamingWeightCacheProvider::Release() {
@@ -992,6 +1027,10 @@ void StreamingWeightCacheProvider::post_invoke_hook(void* context, size_t offset
   reinterpret_cast<StreamingWeightCacheProvider*>(context)->PostInvokeHook(offset);
 }
 
+void StreamingWeightCacheProvider::trace_weights_addr(void* context, void* addr, size_t offset){
+    reinterpret_cast<StreamingWeightCacheProvider*>(context)->TraceWeightsAddr(addr, offset);
+}
+
 /************ Internal Methods ************/
 
 bool StreamingWeightCacheProvider::LoadLastBuildStep() {
@@ -1177,24 +1216,28 @@ bool WeightChunkPrefetcher::LoadWeightChunk(size_t offset) {
   if (!HasPlan(prefetch_mode_)) {
     return false;
   }  
-  const auto& plan = plans_[ModeToIndex(prefetch_mode_)];
-  auto it = plan.offset_to_index.find(offset);
-  if (it == plan.offset_to_index.end()) return false;
-  size_t idx = it->second;  
+//   const auto& plan = plans_[ModeToIndex(prefetch_mode_)];
+//   auto it = plan.offset_to_index.find(offset);
+//   if (it == plan.offset_to_index.end()) return false;
+//   size_t idx = it->second;  
 
-  if (idx >= index_to_chunks_.size()) return false;
-  const auto& chunk_info = index_to_chunks_.at(idx);
+//   if (idx >= index_to_chunks_.size()) return false;
+//   const auto& chunk_info = index_to_chunks_.at(idx);
   
-  uint8_t* target_ptr = static_cast<uint8_t*>(
-    weight_cache_provider_->managed_buffer_[weight_cache_provider_->active_buffer_index_]);
-  
+  const auto it=weight_cache_provider_->offset_to_weight_chunk_info_.find(offset);
+  if(it==weight_cache_provider_->offset_to_weight_chunk_info_.end()) return false;
+
+  const auto& chunk_info=it->second;
+
+  uint8_t* target_ptr = static_cast<uint8_t*>(weight_cache_provider_->managed_buffer_[weight_cache_provider_->active_buffer_index_]);
   ssize_t bytes_read = pread(
-    weight_cache_provider_->direct_io_file_descriptor_.Value(),
-    target_ptr,
-    chunk_info.aligned_size,
-    chunk_info.aligned_offset
+      weight_cache_provider_->direct_io_file_descriptor_.Value(),
+      target_ptr,
+      chunk_info.aligned_size,
+      chunk_info.aligned_offset
   );
-  
+
+
   return bytes_read > 0 && static_cast<size_t>(bytes_read) == chunk_info.aligned_size;
 }
 

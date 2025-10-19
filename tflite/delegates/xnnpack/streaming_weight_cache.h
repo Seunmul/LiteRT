@@ -177,6 +177,8 @@ class StreamingWeightCacheProvider {
 
   void PostInvokeHook(const size_t offset);
 
+  void TraceWeightsAddr(void* addr, const size_t offset);
+
   // Releases the weight cache's memory.
   void Release();
 
@@ -260,6 +262,18 @@ class StreamingWeightCacheProvider {
 
   void SetProviderMode(ProviderMode mode) { mode_ = mode; }
   ProviderMode GetProviderMode() const { return mode_; }
+  std::string GetProviderModeString() const {
+    switch (mode_) {
+      case ProviderMode::PRE_RUNTIME:
+        return "PRE_RUNTIME";
+      case ProviderMode::RUNTIME:
+        return "RUNTIME";
+      case ProviderMode::DEBUG_MMAP:
+        return "DEBUG_MMAP";
+      default:
+        return "UNKNOWN";
+    }
+  }
 
 
   /************ C Interfaces ************/
@@ -291,6 +305,8 @@ class StreamingWeightCacheProvider {
   // C interface: `xnn_weights_cache_provider` callback.
   static void post_invoke_hook(void* context, size_t offset);
 
+  // C interface: `xnn_weights_cache_provider` callback.
+  static void trace_weights_addr(void* context, void* addr, size_t offset);
  private:
   // Hashes a cache key to lookup in `cache_key_to_identifier_`.
   PackIdentifier BuildPackIdentifier(const xnn_weights_cache_look_up_key& key);
@@ -311,6 +327,7 @@ class StreamingWeightCacheProvider {
 #ifdef USE_WEIGHT_STREAMING
       /*pre_invoke_hook=*/StreamingWeightCacheProvider::pre_invoke_hook,
       /*post_invoke_hook=*/StreamingWeightCacheProvider::post_invoke_hook,
+      /*trace_weights_addr=*/StreamingWeightCacheProvider::trace_weights_addr,
 #endif
     };
 
@@ -353,12 +370,15 @@ class StreamingWeightCacheProvider {
   // Stores the loaded buffer addresses corresponding to the given offset in the
   // cache file.
   std::map<size_t, void*> offset_to_addr_;
-
+  
   // Stores the size of each buffer stored at the given offset in the cache file.
   std::map<size_t, size_t> offset_to_size_;
 
   // Stores the weights id corresponding to the given offset in the cache file.
   std::map<size_t, int> offset_to_weights_id_;
+
+
+  ProviderMode mode_ = ProviderMode::RUNTIME; // default: streaming at runtime
 
   //! READY FOR IMPLEMENT DOUBLE BUFFERING -> We need to modify this function to return the address from the active buffer
   void* managed_buffer_[2] = {nullptr, nullptr};
@@ -366,14 +386,15 @@ class StreamingWeightCacheProvider {
   int active_buffer_index_ = 0;
   const size_t managed_buffer_sector_size_ = 4096; // direct I/O를 위한 섹터 크기
 
-  
   std::unordered_map<size_t, weight_chunk_info_t> offset_to_weight_chunk_info_;
-  
-  
+    
   // Prefetcher 인스턴스
   std::unique_ptr<WeightChunkPrefetcher> weight_chunk_prefetcher_;
   
-  ProviderMode mode_ = ProviderMode::RUNTIME; // default: streaming at runtime
+  // Stores the ptr address of the loaded buffer of weights corresponding to the given offset
+  // each array element: [0] -> PREFETCHMODE: PREFILL, [1] -> PREFETCHMODE: DECODE
+  std::map<size_t, std::array<void*, 2>> offset_to_weights_ptr_addr_;
+
 
   // WeightChunkInfoWriter Pointer (Dependency Injection)
   WeightChunkInfoWriter* chunk_info_writer = nullptr;
@@ -399,6 +420,14 @@ public:
     DECODE,
     UNINITIALIZED,
   };
+
+  static inline int ModeToIndex(PrefetchMode mode) {
+    switch (mode) {
+      case PrefetchMode::PREFILL: return 0;
+      case PrefetchMode::DECODE:  return 1;
+      default: return -1;
+    }
+  }
 
   void Init(StreamingWeightCacheProvider* weight_cache_provider);
   
@@ -431,6 +460,18 @@ public:
   
   void UpdatePrefetcherMode(PrefetchMode mode) { prefetch_mode_ = mode; }
   PrefetchMode GetPrefetcherMode() const { return prefetch_mode_; }
+  std::string GetPrefetcherModeString() const {
+    switch (prefetch_mode_) {
+      case PrefetchMode::PREFILL:
+        return "PREFILL";
+      case PrefetchMode::DECODE:
+        return "DECODE";
+      case PrefetchMode::UNINITIALIZED:
+        return "UNINITIALIZED";
+      default:
+        return "UNKNOWN";
+    }
+  }
 
 
 private:
@@ -443,14 +484,6 @@ private:
   // index_to_chunks_[i] contains metadata for chunk_index == i. If an index is
   // unused the entry's chunk_index will be SIZE_MAX.
   std::vector<StreamingWeightCacheProvider::weight_chunk_info_t> index_to_chunks_;
-  
-  static inline int ModeToIndex(PrefetchMode mode) {
-    switch (mode) {
-      case PrefetchMode::PREFILL: return 0;
-      case PrefetchMode::DECODE:  return 1;
-      default: return -1;
-    }
-  }
   
 };
 
