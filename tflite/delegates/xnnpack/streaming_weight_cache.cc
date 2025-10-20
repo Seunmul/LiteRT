@@ -313,13 +313,6 @@ int StreamingWeightCacheProvider::GetWeightsId(size_t offset) const {
   return it == offset_to_weights_id_.end() ? -1 : it->second;
 }
 
-void* StreamingWeightCacheProvider::GetWeightChunkBuffer(int index) const {
-  if (index < 0 || index >= 2) {
-    return nullptr;
-  }
-  return weight_chunk_buffer_[index];
-}
-
 int StreamingWeightCacheProvider::GetDirectIOFileDescriptor() const {
   return direct_io_file_descriptor_.IsValid()
              ? direct_io_file_descriptor_.Value()
@@ -406,7 +399,7 @@ void* StreamingWeightCacheProvider::ReserveSpace(size_t size) {
 }
 
 size_t StreamingWeightCacheProvider::LookUpOrInsert(
-    const xnn_weights_cache_look_up_key* cache_key, void* ptr, size_t size) {
+  const xnn_weights_cache_look_up_key* cache_key, void* ptr, size_t size) {
   XNNPACK_ABORT_CHECK(cache_key, "A null cache key was provided.");
 
   const PackIdentifier pack_id = BuildPackIdentifier(*cache_key);
@@ -432,22 +425,24 @@ void* StreamingWeightCacheProvider::OffsetToAddr(const size_t offset) {
     XNNPACK_ABORT_CHECK(
         !IsBuilding(),
         "Cannot get the address of a buffer in a cache during a building step.");
-     
-    // weight streaming path   
-  if (GetProviderMode() == ProviderMode::RUNTIME) {
-    return static_cast<uint8_t*>(weight_chunk_buffer_[active_weight_chunk_buffer_index_]); // dummy return for runtime streaming
+
+    if (GetProviderMode() == ProviderMode::RUNTIME) {  // weight streaming path
+        return controller_ ? controller_->GetActiveWeightChunkBuffer() : nullptr;
     }
-    else if (GetProviderMode() == ProviderMode::PRE_RUNTIME)  // prefetch plan building path
-    {
-    if (controller_) {
-      controller_->RecordChunkAccess(offset);
-    }
-    return offset_to_addr_.at(offset);
-    }
-    else if(GetProviderMode() == ProviderMode::DEBUG_MMAP){ // general path(with mmap)
+    else if (GetProviderMode() == ProviderMode::PRE_RUNTIME) {  // pre-runtime path (with direct io)
+        if (controller_) {
+            controller_->RecordChunkAccess(offset);
+        }
         return offset_to_addr_.at(offset);
     }
-  return nullptr;
+    else if (GetProviderMode() == ProviderMode::DEBUG_MMAP) {  // general path(with mmap)
+        return offset_to_addr_.at(offset);
+    }
+    else {
+        TFLITE_LOG_PROD(tflite::TFLITE_LOG_ERROR,
+                        "Unknown provider mode.");
+        return nullptr;
+    }
 }
 
 
@@ -496,30 +491,6 @@ bool StreamingWeightCacheProvider::CloseDirectIOFileDescriptor() {
         direct_io_file_descriptor_.Close();
     }
     return true;
-}
-
-void StreamingWeightCacheProvider::SetWeightChunkBuffer(int index, void* buffer, size_t size) {
-  if (index < 0 || index >= 2) {
-    return;
-  }
-  weight_chunk_buffer_[index] = buffer;
-  weight_chunk_buffer_size_ = size;
-}
-
-void StreamingWeightCacheProvider::ClearWeightChunkBuffers() {
-  for (int i = 0; i < 2; ++i) {
-    weight_chunk_buffer_[i] = nullptr;
-  }
-  weight_chunk_buffer_size_ = 0;
-  active_weight_chunk_buffer_index_ = 0;
-}
-
-void StreamingWeightCacheProvider::SwitchActiveWeightChunkBuffer() {
-  active_weight_chunk_buffer_index_ = 1 - active_weight_chunk_buffer_index_;
-}
-
-void StreamingWeightCacheProvider::ResetActiveWeightChunkBuffer() {
-  active_weight_chunk_buffer_index_ = 0;
 }
 
 /********* Utilities *********/
@@ -755,13 +726,14 @@ bool StreamingWeightCacheProvider::VerifyBuffer(size_t offset) {
     size_t abs_offset = mmap_buffer_base_offset_ + offset;
     
     // O_DIRECT requires sector alignment (usually 512 bytes)
-  size_t aligned_offset = (abs_offset / weight_chunk_buffer_sector_size_) * weight_chunk_buffer_sector_size_;
+  const size_t sector_size = GetDirectIOBufferSectorSize();
+  size_t aligned_offset = (abs_offset / sector_size) * sector_size;
     size_t offset_adjust = abs_offset - aligned_offset;
-  size_t aligned_size = ((buf_size + offset_adjust + weight_chunk_buffer_sector_size_ - 1) / weight_chunk_buffer_sector_size_) * weight_chunk_buffer_sector_size_;
+  size_t aligned_size = ((buf_size + offset_adjust + sector_size - 1) / sector_size) * sector_size;
     
     // Allocate aligned buffer
     void* aligned_buffer = nullptr;
-  if (posix_memalign(&aligned_buffer, weight_chunk_buffer_sector_size_, aligned_size) != 0) {
+  if (posix_memalign(&aligned_buffer, sector_size, aligned_size) != 0) {
         perror("[VerifyBuffer] posix_memalign failed");
         return false;
     }

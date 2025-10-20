@@ -42,29 +42,13 @@ class WeightChunkControllerInterface {
   virtual void PostInvoke(size_t offset) = 0;
   virtual void TraceWeightsAddr(void* addr, size_t offset) = 0;
   virtual void RecordChunkAccess(size_t offset) = 0;
+  virtual void* GetActiveWeightChunkBuffer() const = 0;
+  virtual void* GetWeightChunkBuffer(int index) const = 0;
 };
 
-enum class WeightChunkPrefetchMode {
-  PREFILL,
-  DECODE,
-  UNINITIALIZED,
-};
 
-inline int WeightChunkPrefetchModeToIndex(WeightChunkPrefetchMode mode) {
-  switch (mode) {
-    case WeightChunkPrefetchMode::PREFILL:
-      return 0;
-    case WeightChunkPrefetchMode::DECODE:
-      return 1;
-    default:
-      return -1;
-  }
-}
 
 // Forward declaration
-class StreamingWeightCacheProvider;
-class WeightChunkMetaDataWriter;
-class PrefetchPlanLoader;
 
 // Allows XNNPack to directly load packed weights from disk instead of having to
 // repack them every time.
@@ -218,26 +202,16 @@ class StreamingWeightCacheProvider {
   
   bool OpenDirectIOFileDescriptor(std::string file_path);
   bool CloseDirectIOFileDescriptor();
-
-  void SetWeightChunkBuffer(int index, void* buffer, size_t size);
-
-  void ClearWeightChunkBuffers();
-
-  void SwitchActiveWeightChunkBuffer();
-
-  void ResetActiveWeightChunkBuffer();
-
-  void SetController(WeightChunkControllerInterface* controller);
-
+  int GetDirectIOFileDescriptor() const;
+  size_t GetDirectIOBufferSectorSize() const { return buffer_sector_size_; }
+  void SetDirectIOBufferSectorSize(size_t size) { buffer_sector_size_ = size; }
+  
   size_t GetBufferSize(size_t offset) const;
   int GetWeightsId(size_t offset) const;
   size_t GetMMapBaseOffset() const { return mmap_buffer_base_offset_; }
-  size_t GetWeightChunkBufferSectorSize() const { return weight_chunk_buffer_sector_size_; }
-  void* GetWeightChunkBuffer(int index) const;
-  size_t GetWeightChunkBufferSize() const { return weight_chunk_buffer_size_; }
-  int GetActiveWeightChunkBufferIndex() const { return active_weight_chunk_buffer_index_; }
-  int GetDirectIOFileDescriptor() const;
 
+  void SetController(WeightChunkControllerInterface* controller);
+  
   /********* Utilities *********/
 
   // Returns the address that was recorded from the mmap mapping for the given
@@ -275,7 +249,7 @@ class StreamingWeightCacheProvider {
   bool VerifyAllBuffers();
 
 
-  void SetProviderMode(ProviderMode mode) { mode_ = mode; }
+  void UpdateProviderMode(ProviderMode mode) { mode_ = mode; }
   ProviderMode GetProviderMode() const { return mode_; }
   std::string GetProviderModeString() const {
     switch (mode_) {
@@ -346,6 +320,8 @@ class StreamingWeightCacheProvider {
 #endif
     };
 
+  /************ Global variables ************/
+
   // Path to the cache file.
   std::string file_path_;
 
@@ -392,40 +368,13 @@ class StreamingWeightCacheProvider {
   // Stores the weights id corresponding to the given offset in the cache file.
   std::map<size_t, int> offset_to_weights_id_;
 
-
   ProviderMode mode_ = ProviderMode::RUNTIME; // default: streaming at runtime
 
-  //! READY FOR IMPLEMENT DOUBLE BUFFERING -> We need to modify this function to return the address from the active buffer
-  void* weight_chunk_buffer_[2] = {nullptr, nullptr};
-  size_t weight_chunk_buffer_size_ = 0;
-  int active_weight_chunk_buffer_index_ = 0;
-  const size_t weight_chunk_buffer_sector_size_ = 4096; // direct I/O sector size for streaming
+  size_t buffer_sector_size_ = 4096; // direct I/O sector size for streaming
 
   WeightChunkControllerInterface* controller_ = nullptr;
 };
 
-
-//* ============ WeightChunkMetaDataWriter ============ */
-
-class WeightChunkMetaDataWriter {
-public:
-    virtual ~WeightChunkMetaDataWriter() = default;
-    virtual void WriteChunkInfo(const StreamingWeightCacheProvider::weight_chunk_info_t& chunk_info,
-                WeightChunkPrefetchMode prefetch_mode) = 0;
-    virtual void Finalize() = 0;
-};
-
-//* ============ PrefetchPlanLoader ============ */
-
-class PrefetchPlanLoader {
-public:
-    virtual ~PrefetchPlanLoader() = default;
-
-    // Load prefetch plan from external source (e.g., JSON file)
-    virtual bool LoadFromFile(const std::string& plan_file_path) = 0;
-    
-    
-};
 
 }  // namespace xnnpack
 }  // namespace tflite
