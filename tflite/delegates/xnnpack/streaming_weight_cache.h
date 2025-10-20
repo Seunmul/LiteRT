@@ -32,13 +32,37 @@ limitations under the License.
 #include "tflite/delegates/xnnpack/weight_cache_schema_generated.h"
 #include "tflite/delegates/xnnpack/weight_cache.h"
 
-
 namespace tflite {
 namespace xnnpack {
 
+class WeightChunkControllerInterface {
+ public:
+  virtual ~WeightChunkControllerInterface() = default;
+  virtual void PreInvoke(size_t offset) = 0;
+  virtual void PostInvoke(size_t offset) = 0;
+  virtual void TraceWeightsAddr(void* addr, size_t offset) = 0;
+  virtual void RecordChunkAccess(size_t offset) = 0;
+};
+
+enum class WeightChunkPrefetchMode {
+  PREFILL,
+  DECODE,
+  UNINITIALIZED,
+};
+
+inline int WeightChunkPrefetchModeToIndex(WeightChunkPrefetchMode mode) {
+  switch (mode) {
+    case WeightChunkPrefetchMode::PREFILL:
+      return 0;
+    case WeightChunkPrefetchMode::DECODE:
+      return 1;
+    default:
+      return -1;
+  }
+}
+
 // Forward declaration
 class StreamingWeightCacheProvider;
-class WeightChunkPrefetcher;
 class WeightChunkMetaDataWriter;
 class PrefetchPlanLoader;
 
@@ -79,11 +103,6 @@ class StreamingWeightCacheProvider {
     RUNTIME,      // runtime streaming mode (default)
     DEBUG_MMAP    // mmap only for debugging
   };
-
-  
-  // WeightChunkPrefetcher가 private 멤버에 접근할 수 있도록 friend 선언
-  friend class WeightChunkPrefetcher;
-  friend class WeightChunkMetaDataWriter;
 
   // Changes the file path to save the cache to.
   //
@@ -200,28 +219,24 @@ class StreamingWeightCacheProvider {
   bool OpenDirectIOFileDescriptor(std::string file_path);
   bool CloseDirectIOFileDescriptor();
 
-  // Initializes the double managed buffer with the given size.
-  void AllocManagedBuffer(size_t size);
-  
-  void FreeManagedBuffer();
-  
-  void SwitchActiveBuffer();
+  void SetWeightChunkBuffer(int index, void* buffer, size_t size);
 
-  void ResetActiveBuffer();
+  void ClearWeightChunkBuffers();
 
+  void SwitchActiveWeightChunkBuffer();
 
-  // WeightChunkPrefetcher Helpers
-  void InitWeightChunkPrefetcher();
+  void ResetActiveWeightChunkBuffer();
 
-  WeightChunkPrefetcher* GetWeightChunkPrefetcher(){
-    return weight_chunk_prefetcher_.get();
-  }
+  void SetController(WeightChunkControllerInterface* controller);
 
-  // WeightChunkMetaDataWriter Helpers
-  void SetWeightChunkInfoWriter(WeightChunkMetaDataWriter* writer) {
-        chunk_info_writer = writer;
-  }
-
+  size_t GetBufferSize(size_t offset) const;
+  int GetWeightsId(size_t offset) const;
+  size_t GetMMapBaseOffset() const { return mmap_buffer_base_offset_; }
+  size_t GetWeightChunkBufferSectorSize() const { return weight_chunk_buffer_sector_size_; }
+  void* GetWeightChunkBuffer(int index) const;
+  size_t GetWeightChunkBufferSize() const { return weight_chunk_buffer_size_; }
+  int GetActiveWeightChunkBufferIndex() const { return active_weight_chunk_buffer_index_; }
+  int GetDirectIOFileDescriptor() const;
 
   /********* Utilities *********/
 
@@ -381,107 +396,14 @@ class StreamingWeightCacheProvider {
   ProviderMode mode_ = ProviderMode::RUNTIME; // default: streaming at runtime
 
   //! READY FOR IMPLEMENT DOUBLE BUFFERING -> We need to modify this function to return the address from the active buffer
-  void* managed_buffer_[2] = {nullptr, nullptr};
-  size_t managed_buffer_size_ = 0;
-  int active_buffer_index_ = 0;
-  const size_t managed_buffer_sector_size_ = 4096; // direct I/O를 위한 섹터 크기
+  void* weight_chunk_buffer_[2] = {nullptr, nullptr};
+  size_t weight_chunk_buffer_size_ = 0;
+  int active_weight_chunk_buffer_index_ = 0;
+  const size_t weight_chunk_buffer_sector_size_ = 4096; // direct I/O sector size for streaming
 
-  std::unordered_map<size_t, weight_chunk_info_t> offset_to_weight_chunk_info_;
-    
-  // Prefetcher 인스턴스
-  std::unique_ptr<WeightChunkPrefetcher> weight_chunk_prefetcher_;
-  
-  // Stores the ptr address of the loaded buffer of weights corresponding to the given offset
-  // each array element: [0] -> PREFETCHMODE: PREFILL, [1] -> PREFETCHMODE: DECODE
-  std::map<size_t, std::array<void*, 2>> offset_to_weights_addr_ptr_;
-
-  // WeightChunkMetaDataWriter Pointer (Dependency Injection)
-  WeightChunkMetaDataWriter* chunk_info_writer = nullptr;
-  
+  WeightChunkControllerInterface* controller_ = nullptr;
 };
 
-//* ============ WeightChunkPrefetcher ============ */
-
-//TODO: add compute-io overlap logic with managed buffers, using multiple threads
-class WeightChunkPrefetcher{
-public:
-  WeightChunkPrefetcher() = default;
-  ~WeightChunkPrefetcher() = default;
-
-  enum class PrefetchState {
-    IDLE,
-    PREFETCHING,
-    COMPLETED
-  };
-
-  enum class PrefetchMode {
-    PREFILL,
-    DECODE,
-    UNINITIALIZED,
-  };
-
-  static inline int PrefetchModeToIndex(PrefetchMode mode) {
-    switch (mode) {
-      case PrefetchMode::PREFILL: return 0;
-      case PrefetchMode::DECODE:  return 1;
-      default: return -1;
-    }
-  }
-
-  void Init(StreamingWeightCacheProvider* weight_cache_provider);
-  
-  struct PrefetchPlan {
-    std::unordered_map<size_t, size_t> offset_to_index; // origin_offset -> index
-    //TODO: Will be revmoved
-    std::vector<StreamingWeightCacheProvider::weight_chunk_info_t> chunks;   // index -> info 
-  };
-
-  // 모드별 프리패치 플랜 설정(소유권 이전)
-  void SetPrefetchPlan(PrefetchMode mode,
-                       std::unordered_map<size_t, size_t>&& offset_to_index,
-                       std::vector<StreamingWeightCacheProvider::weight_chunk_info_t>&& chunks);
-
-  // 플랜 유무 확인/조회(옵션)
-  bool HasPlan(PrefetchMode mode) const;
-  const PrefetchPlan* GetPlan(PrefetchMode mode) const;
-  PrefetchPlan* GetPlan(PrefetchMode mode) = delete;
-  
-  bool LoadWeightChunk(size_t offset);
-
-  // Build a unified index_to_chunks_ map by traversing all plans' chunks.
-  // Key: chunk_index, Value: weight_chunk_info_t (full chunk metadata)
-  // If the same chunk_index appears with a different metadata across modes,
-  // the first occurrence is kept and a warning is logged (showing origin_offset).
-  void BuildIndexToChunksFromPlans();
-
-  // Accessor for the unified chunk table (index -> full chunk metadata).
-  // Empty / unused indices will have chunk_index == SIZE_MAX.
-  const std::vector<StreamingWeightCacheProvider::weight_chunk_info_t>& GetIndexToChunks() const { return index_to_chunks_; }
-  
-  void UpdatePrefetcherMode(PrefetchMode mode) { prefetch_mode_ = mode; }
-  PrefetchMode GetPrefetcherMode() const { return prefetch_mode_; }
-  std::string GetPrefetcherModeString() const {
-    switch (prefetch_mode_) {
-      case PrefetchMode::PREFILL:
-        return "PREFILL";
-      case PrefetchMode::DECODE:
-        return "DECODE";
-      case PrefetchMode::UNINITIALIZED:
-        return "UNINITIALIZED";
-      default:
-        return "UNKNOWN";
-    }
-  }
-
-
-private:
-  StreamingWeightCacheProvider* weight_cache_provider_;
-  PrefetchMode prefetch_mode_ = PrefetchMode::UNINITIALIZED;
-  std::array<PrefetchPlan, 2> prefetch_plans_{}; // [PREFILL=0, DECODE=1]
-  bool has_plan_[2] = {false, false};
-  std::vector<StreamingWeightCacheProvider::weight_chunk_info_t>
-      index_to_chunks_;
-};
 
 //* ============ WeightChunkMetaDataWriter ============ */
 
@@ -489,7 +411,7 @@ class WeightChunkMetaDataWriter {
 public:
     virtual ~WeightChunkMetaDataWriter() = default;
     virtual void WriteChunkInfo(const StreamingWeightCacheProvider::weight_chunk_info_t& chunk_info,
-                                WeightChunkPrefetcher::PrefetchMode prefetch_mode) = 0;
+                WeightChunkPrefetchMode prefetch_mode) = 0;
     virtual void Finalize() = 0;
 };
 
