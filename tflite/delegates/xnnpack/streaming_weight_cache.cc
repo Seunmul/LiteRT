@@ -487,7 +487,7 @@ void StreamingWeightCacheProvider::TraceWeightsAddr(void *addr, const size_t off
         return;
     }
 
-    int mode_idx = WeightChunkPrefetcher::ModeToIndex(weight_chunk_prefetcher_->GetPrefetcherMode());
+    int mode_idx = WeightChunkPrefetcher::PrefetchModeToIndex(weight_chunk_prefetcher_->GetPrefetcherMode());
     if (mode_idx < 0) return;
 
     offset_to_weights_addr_ptr_[offset][mode_idx] = addr;
@@ -1034,7 +1034,7 @@ void WeightChunkPrefetcher::Init(StreamingWeightCacheProvider* provider) {
 void WeightChunkPrefetcher::SetPrefetchPlan(
     PrefetchMode mode, std::unordered_map<size_t, size_t>&& offset_to_index,
     std::vector<StreamingWeightCacheProvider::weight_chunk_info_t>&& chunks) {
-  const int idx = ModeToIndex(mode);
+  const int idx = PrefetchModeToIndex(mode);
   if (idx < 0) return;
   prefetch_plans_[idx].offset_to_index = std::move(offset_to_index);
   prefetch_plans_[idx].chunks = std::move(chunks);
@@ -1042,13 +1042,13 @@ void WeightChunkPrefetcher::SetPrefetchPlan(
 }
 
 bool WeightChunkPrefetcher::HasPlan(PrefetchMode mode) const {
-  const int idx = ModeToIndex(mode);
+  const int idx = PrefetchModeToIndex(mode);
   return idx >= 0 && has_plan_[idx];
 }
 
 const WeightChunkPrefetcher::PrefetchPlan* WeightChunkPrefetcher::GetPlan(
     PrefetchMode mode) const {
-  const int idx = ModeToIndex(mode);
+  const int idx = PrefetchModeToIndex(mode);
   if (idx < 0 || !has_plan_[idx]) return nullptr;
   return &prefetch_plans_[idx];
 }
@@ -1150,12 +1150,12 @@ static inline bool ExecuteIO(int fd, void* buffer, size_t size, off_t offset) {
 
 bool WeightChunkPrefetcher::LoadWeightChunk(size_t current_offset) {
   // 1. Precondition checks: Validate prefetch mode and plan availability
-  if (prefetch_mode_ == PrefetchMode::UNINITIALIZED || !HasPlan(prefetch_mode_)) {
+  if (GetPrefetcherMode() == PrefetchMode::UNINITIALIZED || !HasPlan(GetPrefetcherMode())) {
     return false;
   }
 
   // 2. Initialization: Set up mode index and provider reference
-  const int mode_idx = ModeToIndex(prefetch_mode_);
+  const int mode_idx = PrefetchModeToIndex(GetPrefetcherMode());
   const auto* provider = weight_cache_provider_; 
 
   // 3. Chunk lookup: Find the chunk corresponding to current offset in prefetch plan

@@ -39,7 +39,7 @@ namespace xnnpack {
 // Forward declaration
 class StreamingWeightCacheProvider;
 class WeightChunkPrefetcher;
-class WeightChunkInfoWriter;
+class WeightChunkMetaDataWriter;
 class PrefetchPlanLoader;
 
 // Allows XNNPack to directly load packed weights from disk instead of having to
@@ -83,7 +83,7 @@ class StreamingWeightCacheProvider {
   
   // WeightChunkPrefetcher가 private 멤버에 접근할 수 있도록 friend 선언
   friend class WeightChunkPrefetcher;
-  friend class WeightChunkInfoWriter;
+  friend class WeightChunkMetaDataWriter;
 
   // Changes the file path to save the cache to.
   //
@@ -217,8 +217,8 @@ class StreamingWeightCacheProvider {
     return weight_chunk_prefetcher_.get();
   }
 
-  // WeightChunkInfoWriter Helpers
-  void SetWeightChunkInfoWriter(WeightChunkInfoWriter* writer) {
+  // WeightChunkMetaDataWriter Helpers
+  void SetWeightChunkInfoWriter(WeightChunkMetaDataWriter* writer) {
         chunk_info_writer = writer;
   }
 
@@ -387,7 +387,6 @@ class StreamingWeightCacheProvider {
   const size_t managed_buffer_sector_size_ = 4096; // direct I/O를 위한 섹터 크기
 
   std::unordered_map<size_t, weight_chunk_info_t> offset_to_weight_chunk_info_;
-  std::unordered_map<size_t, weight_chunk_info_t> index_to_weight_chunk_info_;
     
   // Prefetcher 인스턴스
   std::unique_ptr<WeightChunkPrefetcher> weight_chunk_prefetcher_;
@@ -396,15 +395,14 @@ class StreamingWeightCacheProvider {
   // each array element: [0] -> PREFETCHMODE: PREFILL, [1] -> PREFETCHMODE: DECODE
   std::map<size_t, std::array<void*, 2>> offset_to_weights_addr_ptr_;
 
-
-  // WeightChunkInfoWriter Pointer (Dependency Injection)
-  WeightChunkInfoWriter* chunk_info_writer = nullptr;
+  // WeightChunkMetaDataWriter Pointer (Dependency Injection)
+  WeightChunkMetaDataWriter* chunk_info_writer = nullptr;
   
 };
 
 //* ============ WeightChunkPrefetcher ============ */
 
-
+//TODO: add compute-io overlap logic with managed buffers, using multiple threads
 class WeightChunkPrefetcher{
 public:
   WeightChunkPrefetcher() = default;
@@ -422,7 +420,7 @@ public:
     UNINITIALIZED,
   };
 
-  static inline int ModeToIndex(PrefetchMode mode) {
+  static inline int PrefetchModeToIndex(PrefetchMode mode) {
     switch (mode) {
       case PrefetchMode::PREFILL: return 0;
       case PrefetchMode::DECODE:  return 1;
@@ -434,7 +432,8 @@ public:
   
   struct PrefetchPlan {
     std::unordered_map<size_t, size_t> offset_to_index; // origin_offset -> index
-    std::vector<StreamingWeightCacheProvider::weight_chunk_info_t> chunks;   // index -> info //TODO: Will be revmoved
+    //TODO: Will be revmoved
+    std::vector<StreamingWeightCacheProvider::weight_chunk_info_t> chunks;   // index -> info 
   };
 
   // 모드별 프리패치 플랜 설정(소유권 이전)
@@ -476,9 +475,6 @@ public:
 
 
 private:
-
-  
-
   StreamingWeightCacheProvider* weight_cache_provider_;
   PrefetchMode prefetch_mode_ = PrefetchMode::UNINITIALIZED;
   std::array<PrefetchPlan, 2> prefetch_plans_{}; // [PREFILL=0, DECODE=1]
@@ -487,11 +483,11 @@ private:
       index_to_chunks_;
 };
 
-//* ============ WeightChunkInfoWriter ============ */
+//* ============ WeightChunkMetaDataWriter ============ */
 
-class WeightChunkInfoWriter {
+class WeightChunkMetaDataWriter {
 public:
-    virtual ~WeightChunkInfoWriter() = default;
+    virtual ~WeightChunkMetaDataWriter() = default;
     virtual void WriteChunkInfo(const StreamingWeightCacheProvider::weight_chunk_info_t& chunk_info,
                                 WeightChunkPrefetcher::PrefetchMode prefetch_mode) = 0;
     virtual void Finalize() = 0;
