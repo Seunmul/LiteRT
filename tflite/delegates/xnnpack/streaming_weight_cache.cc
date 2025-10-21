@@ -429,7 +429,7 @@ void* StreamingWeightCacheProvider::OffsetToAddr(const size_t offset) {
     if (GetProviderMode() == ProviderMode::RUNTIME) {  // weight streaming path
         return controller_ ? controller_->GetActiveWeightChunkBuffer() : nullptr;
     }
-    else if (GetProviderMode() == ProviderMode::PRE_RUNTIME) {  // pre-runtime path (with direct io)
+    else if (GetProviderMode() == ProviderMode::PRE_RUNTIME) {  // pre-runtime path
         if (controller_) {
             controller_->RecordChunkAccess(offset);
         }
@@ -448,19 +448,19 @@ void* StreamingWeightCacheProvider::OffsetToAddr(const size_t offset) {
 
 void StreamingWeightCacheProvider::PreInvokeHook(const size_t offset){
   if (controller_) {
-    controller_->PreInvoke(offset);
+    controller_->PreInvokeImpl(offset);
   }
 }
 
 void StreamingWeightCacheProvider::PostInvokeHook(const size_t offset){
    if (controller_) {
-     controller_->PostInvoke(offset);
+     controller_->PostInvokeImpl(offset);
    }
 }
 
 void StreamingWeightCacheProvider::TraceWeightsAddr(void *addr, const size_t offset){
   if (controller_) {
-    controller_->TraceWeightsAddr(addr, offset);
+    controller_->TraceWeightsAddrImpl(addr, offset);
   }
 }
 

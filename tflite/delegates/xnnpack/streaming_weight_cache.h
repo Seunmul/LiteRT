@@ -38,9 +38,9 @@ namespace xnnpack {
 class WeightChunkControllerInterface {
  public:
   virtual ~WeightChunkControllerInterface() = default;
-  virtual void PreInvoke(size_t offset) = 0;
-  virtual void PostInvoke(size_t offset) = 0;
-  virtual void TraceWeightsAddr(void* addr, size_t offset) = 0;
+  virtual void PreInvokeImpl(size_t offset) = 0;
+  virtual void PostInvokeImpl(size_t offset) = 0;
+  virtual void TraceWeightsAddrImpl(void* addr, size_t offset) = 0;
   virtual void RecordChunkAccess(size_t offset) = 0;
   virtual void* GetActiveWeightChunkBuffer() const = 0;
   virtual void* GetWeightChunkBuffer(int index) const = 0;
