@@ -43,7 +43,7 @@ class WeightChunkControllerInterface {
   virtual void TraceWeightsAddrImpl(void* addr, size_t offset) = 0;
   virtual void RecordChunkAccess(size_t offset) = 0;
   virtual void* GetActiveWeightChunkBuffer() const = 0;
-  virtual void* GetWeightChunkBuffer(int index) const = 0;
+  virtual void* GetWeightChunkBufferAddr(int index) const = 0;
 };
 
 
