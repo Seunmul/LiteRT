@@ -41,6 +41,7 @@ class WeightChunkControllerInterface {
   virtual void PreInvokeImpl(size_t offset) = 0;
   virtual void PostInvokeImpl(size_t offset) = 0;
   virtual void TraceWeightsAddrImpl(void* addr, size_t offset) = 0;
+  virtual int FetchArgIntImpl() = 0;
   virtual void RecordChunkAccess(size_t offset) = 0;
   virtual void* GetActiveWeightChunkBuffer() const = 0;
   virtual void* GetWeightChunkBufferAddr(int index) const = 0;
@@ -182,6 +183,8 @@ class StreamingWeightCacheProvider {
 
   void TraceWeightsAddr(void* addr, const size_t offset);
 
+  int FetchArgInt();
+
   // Releases the weight cache's memory.
   void Release();
 
@@ -296,6 +299,10 @@ class StreamingWeightCacheProvider {
 
   // C interface: `xnn_weights_cache_provider` callback.
   static void trace_weights_addr(void* context, void* addr, size_t offset);
+
+  // C interface: `xnn_weights_cache_provider` callback.
+  static int fetch_arg_int(void* context);
+
  private:
   // Hashes a cache key to lookup in `cache_key_to_identifier_`.
   PackIdentifier BuildPackIdentifier(const xnn_weights_cache_look_up_key& key);
@@ -317,6 +324,7 @@ class StreamingWeightCacheProvider {
       /*pre_invoke_hook=*/StreamingWeightCacheProvider::pre_invoke_hook,
       /*post_invoke_hook=*/StreamingWeightCacheProvider::post_invoke_hook,
       /*trace_weights_addr=*/StreamingWeightCacheProvider::trace_weights_addr,
+      /*fetch_arg_int=*/StreamingWeightCacheProvider::fetch_arg_int,
 #endif
     };
 

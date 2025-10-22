@@ -464,6 +464,10 @@ void StreamingWeightCacheProvider::TraceWeightsAddr(void *addr, const size_t off
   }
 }
 
+int StreamingWeightCacheProvider::FetchArgInt() {
+    return controller_->FetchArgIntImpl();
+}
+
 void StreamingWeightCacheProvider::Release() {
   buffer_address_to_identifier_.clear();
   cache_key_to_offset_.clear();
@@ -856,6 +860,11 @@ void StreamingWeightCacheProvider::post_invoke_hook(void* context, size_t offset
 
 void StreamingWeightCacheProvider::trace_weights_addr(void* context, void* addr, size_t offset){
     reinterpret_cast<StreamingWeightCacheProvider*>(context)->TraceWeightsAddr(addr, offset);
+}
+
+int StreamingWeightCacheProvider::fetch_arg_int(void* context) {
+    return static_cast<int>(
+        reinterpret_cast<StreamingWeightCacheProvider*>(context)->FetchArgInt());
 }
 
 /************ Internal Methods ************/
