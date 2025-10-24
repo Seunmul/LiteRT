@@ -84,9 +84,10 @@ class StreamingWeightCacheProvider {
   };
 
   enum class ProviderMode {
-    PRE_RUNTIME,  // record pre-runtime I/O prefetch plan
+    PRE_RUN_WARMUP,  // record weight access for pre-runtime
+    PRE_RUN_PROFILE, // pre-run profile mode
     RUNTIME,      // runtime streaming mode (default)
-    DEBUG_MMAP    // mmap only for debugging
+    DEBUG_MMAP,    // mmap only for debugging
   };
 
   // Changes the file path to save the cache to.
@@ -256,8 +257,10 @@ class StreamingWeightCacheProvider {
   ProviderMode GetProviderMode() const { return mode_; }
   std::string GetProviderModeString() const {
     switch (mode_) {
-      case ProviderMode::PRE_RUNTIME:
-        return "PRE_RUNTIME";
+      case ProviderMode::PRE_RUN_WARMUP:
+        return "PRE_RUN_WARMUP";
+      case ProviderMode::PRE_RUN_PROFILE:
+        return "PRE_RUN_PROFILE";
       case ProviderMode::RUNTIME:
         return "RUNTIME";
       case ProviderMode::DEBUG_MMAP:

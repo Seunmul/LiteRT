@@ -279,17 +279,15 @@ bool StreamingWeightCacheProvider::Load() {
                          /*bias_id=*/buffer->bias_id()},
           BufferLocation{/*offset=*/buffer->offset(), /*size=*/buffer->size()});
       offset_to_addr_.insert({buffer->offset(), mmap_handle.data() + mmap_buffer_base_offset_ + buffer->offset()});  
-      if(GetProviderMode() == ProviderMode::PRE_RUNTIME) {
-        offset_to_size_.insert({buffer->offset(), buffer->size()});
-        offset_to_weights_id_.insert({buffer->offset(), buffer->weights_id()});
-      }
-        //   TFLITE_LOG_PROD(tflite::TFLITE_LOG_INFO,
-        //     "Loaded buffer: pack_algorithm_id=%zu, weights_id=%zu, bias_id=%zu, offset=%zu, size=%zu",
-        //          buffer->packing_algorithm_id(),
-        //          buffer->weights_id(),
-        //          buffer->bias_id(),
-        //          buffer->offset(),
-        //          buffer->size());
+      offset_to_size_.insert({buffer->offset(), buffer->size()});
+      offset_to_weights_id_.insert({buffer->offset(), buffer->weights_id()});
+
+      TFLITE_LOG_PROD(tflite::TFLITE_LOG_INFO,
+            "Loaded buffer: pack_algorithm_id=%zu, weights_id=%zu, offset=%zu, size=%zu",
+                 buffer->packing_algorithm_id(),
+                 buffer->weights_id(),
+                 buffer->offset(),
+                 buffer->size());
     }
   }
 
@@ -425,24 +423,29 @@ void* StreamingWeightCacheProvider::OffsetToAddr(const size_t offset) {
     XNNPACK_ABORT_CHECK(
         !IsBuilding(),
         "Cannot get the address of a buffer in a cache during a building step.");
-
-    if (GetProviderMode() == ProviderMode::RUNTIME) {  // weight streaming path
-        return controller_ ? controller_->GetActiveWeightChunkBuffer() : nullptr;
-    }
-    else if (GetProviderMode() == ProviderMode::PRE_RUNTIME) {  // pre-runtime path
-        if (controller_) {
-            controller_->RecordChunkAccess(offset);
+    void* addr = nullptr;
+        switch (GetProviderMode()) {
+            case ProviderMode::RUNTIME:  // weight streaming path
+                addr = controller_ ? controller_->GetActiveWeightChunkBuffer() : nullptr; // return weight chunk buffer
+                break;
+            case ProviderMode::PRE_RUN_WARMUP:  // pre-runtime (warmup) path
+                if (controller_) {
+                    controller_->RecordChunkAccess(offset);
+                }
+                addr = offset_to_addr_.at(offset);
+                break;
+            case ProviderMode::PRE_RUN_PROFILE:  // pre-runtime (profile) path
+                    addr = controller_ ? controller_->GetActiveWeightChunkBuffer() : nullptr; // return weight chunk buffer
+                break;
+            case ProviderMode::DEBUG_MMAP:  // general path(with mmap)
+                addr = offset_to_addr_.at(offset);
+                break;
+            default: 
+                TFLITE_LOG_PROD(tflite::TFLITE_LOG_ERROR,
+                                "Unknown provider mode.");
+                break;
         }
-        return offset_to_addr_.at(offset);
-    }
-    else if (GetProviderMode() == ProviderMode::DEBUG_MMAP) {  // general path(with mmap)
-        return offset_to_addr_.at(offset);
-    }
-    else {
-        TFLITE_LOG_PROD(tflite::TFLITE_LOG_ERROR,
-                        "Unknown provider mode.");
-        return nullptr;
-    }
+    return addr;
 }
 
 
