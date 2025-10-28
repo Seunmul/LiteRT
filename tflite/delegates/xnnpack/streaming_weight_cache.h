@@ -79,7 +79,6 @@ class StreamingWeightCacheProvider {
     size_t aligned_size;
     size_t origin_offset;
     size_t origin_size;
-    int managed_buffer_index; // which managed buffer was used to load this chunk
     size_t weights_id;
   };
 
