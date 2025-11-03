@@ -38,13 +38,13 @@ namespace xnnpack {
 class WeightChunkControllerInterface {
  public:
   virtual ~WeightChunkControllerInterface() = default;
-  virtual void PreInvokeImpl(size_t offset) = 0;
-  virtual void PostInvokeImpl(size_t offset) = 0;
-  virtual void TraceWeightsAddrImpl(void* addr, size_t offset) = 0;
-  virtual int FetchArgIntImpl() = 0;
-  virtual void RecordChunkAccess(size_t offset) = 0;
-  virtual void* GetActiveWeightChunkBuffer() const = 0;
-  virtual void* GetWeightChunkBufferAddr(int index) const = 0;
+  virtual inline void* GetActiveWeightChunkBuffer() const = 0;
+  virtual inline void* GetWeightChunkBufferAddr(int index) const = 0;
+  virtual inline void* OffsetToAddrImpl(size_t offset) = 0;
+  virtual inline void PreInvokeImpl(size_t offset) = 0;
+  virtual inline void PostInvokeImpl(size_t offset) = 0;
+  virtual inline void TraceWeightsAddrImpl(void* addr, size_t offset) = 0;
+  virtual inline int FetchArgIntImpl() = 0;
 };
 
 
@@ -72,15 +72,6 @@ class StreamingWeightCacheProvider {
   StreamingWeightCacheProvider(StreamingWeightCacheProvider&&);
   StreamingWeightCacheProvider& operator=(StreamingWeightCacheProvider&&);
 
-  struct weight_chunk_info_t {
-    size_t chunk_index;
-    size_t aligned_offset;
-    size_t offset_adjust; //abs_offset(mmap_buffer_base_offset_ + offset) - aligned_offset
-    size_t aligned_size;
-    size_t origin_offset;
-    size_t origin_size;
-    size_t weights_id;
-  };
 
   enum class ProviderMode {
     PRE_RUN_WARMUP,  // record weight access for pre-runtime
@@ -368,6 +359,9 @@ class StreamingWeightCacheProvider {
   // of the buffers are not available/can't be retrieved.
   bool is_build_step_ = false;
 
+
+  ProviderMode mode_ = ProviderMode::RUNTIME; // default: streaming at runtime
+
   // Stores the loaded buffer addresses corresponding to the given offset in the
   // cache file.
   std::map<size_t, void*> offset_to_addr_;
@@ -377,8 +371,6 @@ class StreamingWeightCacheProvider {
 
   // Stores the weights id corresponding to the given offset in the cache file.
   std::map<size_t, int> offset_to_weights_id_;
-
-  ProviderMode mode_ = ProviderMode::RUNTIME; // default: streaming at runtime
 
   size_t buffer_sector_size_ = 4096; // direct I/O sector size for streaming
 

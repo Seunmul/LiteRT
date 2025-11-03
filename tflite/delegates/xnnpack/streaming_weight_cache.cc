@@ -423,48 +423,21 @@ void* StreamingWeightCacheProvider::OffsetToAddr(const size_t offset) {
     XNNPACK_ABORT_CHECK(
         !IsBuilding(),
         "Cannot get the address of a buffer in a cache during a building step.");
-    void* addr = nullptr;
-        switch (GetProviderMode()) {
-            case ProviderMode::RUNTIME:  // weight streaming path
-                addr = controller_ ? controller_->GetActiveWeightChunkBuffer() : nullptr; // return weight chunk buffer
-                break;
-            case ProviderMode::PRE_RUN_WARMUP:  // pre-runtime (warmup) path
-                if (controller_) {
-                    controller_->RecordChunkAccess(offset);
-                }
-                addr = offset_to_addr_.at(offset);
-                break;
-            case ProviderMode::PRE_RUN_PROFILE:  // pre-runtime (profile) path
-                    addr = controller_ ? controller_->GetActiveWeightChunkBuffer() : nullptr; // return weight chunk buffer
-                break;
-            case ProviderMode::DEBUG_MMAP:  // general path(with mmap)
-                addr = offset_to_addr_.at(offset);
-                break;
-            default: 
-                TFLITE_LOG_PROD(tflite::TFLITE_LOG_ERROR,
-                                "Unknown provider mode.");
-                break;
-        }
-    return addr;
+        
+    return controller_ -> OffsetToAddrImpl(offset);
 }
 
 
 void StreamingWeightCacheProvider::PreInvokeHook(const size_t offset){
-  if (controller_) {
     controller_->PreInvokeImpl(offset);
-  }
 }
 
 void StreamingWeightCacheProvider::PostInvokeHook(const size_t offset){
-   if (controller_) {
      controller_->PostInvokeImpl(offset);
-   }
 }
 
 void StreamingWeightCacheProvider::TraceWeightsAddr(void *addr, const size_t offset){
-  if (controller_) {
     controller_->TraceWeightsAddrImpl(addr, offset);
-  }
 }
 
 int StreamingWeightCacheProvider::FetchArgInt() {
