@@ -282,12 +282,12 @@ bool StreamingWeightCacheProvider::Load() {
       offset_to_size_.insert({buffer->offset(), buffer->size()});
       offset_to_weights_id_.insert({buffer->offset(), buffer->weights_id()});
 
-      TFLITE_LOG_PROD(tflite::TFLITE_LOG_INFO,
-            "Loaded buffer: pack_algorithm_id=%zu, weights_id=%zu, offset=%zu, size=%zu",
-                 buffer->packing_algorithm_id(),
-                 buffer->weights_id(),
-                 buffer->offset(),
-                 buffer->size());
+    //   TFLITE_LOG_PROD(tflite::TFLITE_LOG_INFO,
+    //         "Loaded buffer: pack_algorithm_id=%zu, weights_id=%zu, offset=%zu, size=%zu",
+    //              buffer->packing_algorithm_id(),
+    //              buffer->weights_id(),
+    //              buffer->offset(),
+    //              buffer->size());
     }
   }
 
